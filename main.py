@@ -12,11 +12,9 @@ import yt_dlp
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import (
-    InlineQuery,
-    InlineQueryResultArticle,
-    InlineQueryResultCachedVideo,
-    InputTextMessageContent,
     FSInputFile,
+    InlineQuery,
+    InlineQueryResultCachedVideo,
     Update,
 )
 from aiohttp import web
@@ -48,14 +46,25 @@ def required(name):
     return value
 
 
-def tiktok_url(text):
+def media_url(text):
     url = text.strip().split()[0] if text.strip() else ""
-    host = (urlparse(url).hostname or "").lower()
-    if url.startswith(("http://", "https://")) and (
-        host == "tiktok.com" or host.endswith(".tiktok.com")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not url.startswith(("http://", "https://")):
+        return None
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
+        return url
+    if (
+        (host == "instagram.com" or host.endswith(".instagram.com"))
+        and parsed.path.lower().startswith(("/reel/", "/reels/"))
     ):
         return url
     return None
+
+
+def source_name(url):
+    host = (urlparse(url).hostname or "").lower()
+    return "instagram" if "instagram.com" in host else "tiktok"
 
 
 def extractor_options(proxy, directory=None):
@@ -65,6 +74,9 @@ def extractor_options(proxy, directory=None):
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "socket_timeout": int(setting("YTDLP_SOCKET_TIMEOUT", "30")),
+        "retries": int(setting("YTDLP_RETRIES", "1")),
+        "fragment_retries": int(setting("YTDLP_RETRIES", "1")),
     }
     if proxy:
         options["proxy"] = proxy
@@ -89,7 +101,8 @@ def download_video(url, proxy, directory):
 
 
 def video_key(info, url):
-    return str(info.get("id") or hashlib.sha256(url.encode()).hexdigest()[:32])
+    key = str(info.get("id") or hashlib.sha256(url.encode()).hexdigest()[:32])
+    return f"{source_name(url)}:{key}"
 
 
 def video_record(info, file_id):
@@ -143,16 +156,18 @@ class VideoService:
         self.cache = cache
         self.proxy = proxy
         self.cache_chat_id = cache_chat_id
+        self.inline_timeout = int(setting("INLINE_TIMEOUT", "20"))
+        self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
 
     async def result_for(self, url):
         metadata = await asyncio.to_thread(extract_metadata, url, self.proxy)
         key = video_key(metadata, url)
         record = await self.cache.get(key)
         if record is not None:
-            logger.info("Cache hit for TikTok video %s", key)
+            logger.info("Cache hit for %s video %s", source_name(url), key)
             return key, record
 
-        logger.info("Cache miss for TikTok video %s", key)
+        logger.info("Cache miss for %s video %s", source_name(url), key)
         with tempfile.TemporaryDirectory(prefix="ttblow-") as directory:
             info, path = await asyncio.to_thread(
                 download_video,
@@ -164,23 +179,15 @@ class VideoService:
                 chat_id=self.cache_chat_id,
                 video=FSInputFile(path),
                 supports_streaming=True,
+                    request_timeout=self.telegram_timeout,
             )
             record = video_record(info, message.video.file_id)
             await self.cache.set(key, record)
-        logger.info("Cached TikTok video %s as Telegram file_id", key)
+        logger.info("Cached %s video %s as Telegram file_id", source_name(url), key)
         return key, record
 
 
 router = Router()
-
-
-def error_result(message):
-    return InlineQueryResultArticle(
-        id="error",
-        title="Не удалось получить видео",
-        description=message,
-        input_message_content=InputTextMessageContent(message_text=message),
-    )
 
 
 def cached_result(key, record):
@@ -195,24 +202,46 @@ def cached_result(key, record):
     )
 
 
+def report_background_failure(task):
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error:
+        logger.error("Timed-out video job failed: %s", error)
+
+
 @router.inline_query()
 async def inline_query(query: InlineQuery, service: VideoService):
     text = query.query or ""
     logger.info("Inline query %s: %r", query.id, text)
-    url = tiktok_url(text)
+    url = media_url(text)
     if not url:
-        await query.answer([], cache_time=0, is_personal=True)
-        return
+        results = []
+    else:
+        task = asyncio.create_task(service.result_for(url))
+        try:
+            key, record = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=service.inline_timeout,
+            )
+            results = [cached_result(key, record)]
+        except asyncio.TimeoutError:
+            task.add_done_callback(report_background_failure)
+            logger.warning(
+                "Inline query %s timed out after %ss",
+                query.id,
+                service.inline_timeout,
+            )
+            results = []
+        except Exception as error:
+            logger.error("Failed to prepare inline query %s: %s", query.id, error)
+            results = []
 
     try:
-        key, record = await service.result_for(url)
-        results = [cached_result(key, record)]
+        await query.answer(results, cache_time=0, is_personal=True)
+        logger.info("Answered inline query %s with %d result(s)", query.id, len(results))
     except Exception as error:
-        logger.exception("Failed to prepare inline query %s: %s", query.id, error)
-        results = [error_result("Не удалось подготовить видео")]
-
-    await query.answer(results, cache_time=0, is_personal=True)
-    logger.info("Answered inline query %s with %d result(s)", query.id, len(results))
+        logger.error("Failed to answer inline query %s: %s", query.id, error)
 
 
 def make_dispatcher(service):

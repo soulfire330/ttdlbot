@@ -1,6 +1,6 @@
 # ttblow
 
-Inline Telegram-бот для TikTok. Бот скачивает видео через `yt-dlp` и proxy, загружает его в закрытый Telegram-канал, а пользователю возвращает `file_id` через `InlineQueryResultCachedVideo`.
+Inline Telegram-бот для TikTok и Instagram Reels. Бот скачивает видео через `yt-dlp` и optional proxy, загружает его в закрытый Telegram-канал, а пользователю возвращает `file_id` через `InlineQueryResultCachedVideo`.
 
 ## Как это работает
 
@@ -75,6 +75,7 @@ uv run main.py
 
 ```text
 @имя_бота https://vm.tiktok.com/ZN8dRB5uV/
+@имя_бота https://www.instagram.com/reel/ABC123/
 ```
 
-Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
+Поддерживаются публичные TikTok-видео и Instagram Reels. Приватные Instagram-публикации и ролики, для которых Instagram требует login/cookies, не поддерживаются без отдельной настройки cookies. Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram. При ошибках и таймауте бот отвечает пустым списком inline-результатов и пишет подробности только в лог. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
