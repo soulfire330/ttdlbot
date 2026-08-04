@@ -3,7 +3,9 @@ import hashlib
 import hmac
 import logging
 import os
+import shutil
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -11,6 +13,7 @@ import uvloop
 import yt_dlp
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     FSInputFile,
     InlineQuery,
@@ -67,6 +70,37 @@ def source_name(url):
     return "instagram" if "instagram.com" in host else "tiktok"
 
 
+def normalized_url(url):
+    parsed = urlparse(url)
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+
+
+def validate_video(info, path=None):
+    max_duration = int(setting("MAX_DURATION", "600"))
+    duration = info.get("duration")
+    if duration and duration > max_duration:
+        raise ValueError(f"video duration exceeds {max_duration}s")
+
+    max_size = int(setting("MAX_FILE_SIZE", str(50 * 1024 * 1024)))
+    source_size = info.get("filesize") or info.get("filesize_approx")
+    if source_size and source_size > max_size:
+        raise ValueError(f"video size exceeds {max_size} bytes")
+    if path and path.stat().st_size > max_size:
+        raise ValueError(f"video size exceeds {max_size} bytes")
+
+
+def cleanup_stale_temp_dirs():
+    root = Path(setting("TEMP_DIR", "/tmp"))
+    root.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - int(setting("TEMP_TTL", str(24 * 60 * 60)))
+    for path in root.glob("ttblow-*"):
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path)
+        except OSError as error:
+            logger.warning("Failed to remove stale temp directory %s: %s", path, error)
+
+
 def extractor_options(proxy, directory=None):
     options = {
         "format": "best[ext=mp4]/best",
@@ -77,6 +111,7 @@ def extractor_options(proxy, directory=None):
         "socket_timeout": int(setting("YTDLP_SOCKET_TIMEOUT", "30")),
         "retries": int(setting("YTDLP_RETRIES", "1")),
         "fragment_retries": int(setting("YTDLP_RETRIES", "1")),
+            "max_filesize": int(setting("MAX_FILE_SIZE", str(50 * 1024 * 1024))),
     }
     if proxy:
         options["proxy"] = proxy
@@ -97,6 +132,7 @@ def download_video(url, proxy, directory):
 
     if info.get("ext") != "mp4" or not path.is_file():
         raise ValueError("yt-dlp не скачал доступный mp4")
+    validate_video(info, path)
     return info, path
 
 
@@ -127,14 +163,19 @@ class FileIdCache:
         self.disk = Cache(setting("DISK_CACHE_DIR", "data/cache"))
         self.disk_ttl = int(setting("DISK_CACHE_TTL", str(30 * 24 * 60 * 60)))
 
-    async def get(self, key):
+    async def get_with_source(self, key):
         record = self.ram.get(key)
         if record is not None:
-            return record
+            return record, "ram"
 
         record = await asyncio.to_thread(self.disk.get, key)
         if record is not None:
             self.ram[key] = record
+            return record, "disk"
+        return None, None
+
+    async def get(self, key):
+        record, _ = await self.get_with_source(key)
         return record
 
     async def set(self, key, record):
@@ -145,6 +186,10 @@ class FileIdCache:
             record,
             expire=self.disk_ttl,
         )
+
+    async def delete(self, key):
+        self.ram.pop(key, None)
+        await asyncio.to_thread(self.disk.delete, key)
 
     async def close(self):
         await asyncio.to_thread(self.disk.close)
@@ -158,33 +203,97 @@ class VideoService:
         self.cache_chat_id = cache_chat_id
         self.inline_timeout = int(setting("INLINE_TIMEOUT", "20"))
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
+        self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
+        self.inflight = {}
+        self.rate_limit = TTLCache(
+            maxsize=int(setting("RATE_LIMIT_USERS", "10000")),
+            ttl=int(setting("RATE_LIMIT_WINDOW", "60")),
+        )
+        self.rate_limit_count = int(setting("RATE_LIMIT_COUNT", "10"))
+        self.rate_limit_lock = asyncio.Lock()
+
+    async def allow_user(self, user_id):
+        async with self.rate_limit_lock:
+            count = self.rate_limit.get(user_id, 0)
+            if count >= self.rate_limit_count:
+                return False
+            self.rate_limit[user_id] = count + 1
+            return True
 
     async def result_for(self, url):
-        metadata = await asyncio.to_thread(extract_metadata, url, self.proxy)
-        key = video_key(metadata, url)
-        record = await self.cache.get(key)
-        if record is not None:
-            logger.info("Cache hit for %s video %s", source_name(url), key)
+        request_key = normalized_url(url)
+        task = self.inflight.get(request_key)
+        if task is None:
+            task = asyncio.create_task(self._resolve(url))
+            self.inflight[request_key] = task
+            task.add_done_callback(lambda _: self.inflight.pop(request_key, None))
+        return await asyncio.shield(task)
+
+    async def _resolve(self, url):
+        async with self.jobs:
+            alias = f"alias:{normalized_url(url)}"
+            key = await self.cache.get(alias)
+            if key:
+                record, source = await self.cache.get_with_source(key)
+                if record is not None:
+                    if source == "disk":
+                        try:
+                            await self.bot.get_file(record["file_id"])
+                        except TelegramBadRequest:
+                            await self.cache.delete(key)
+                            await self.cache.delete(alias)
+                            record = None
+                    if record is not None:
+                        logger.info("Cache hit for %s video %s", source_name(url), key)
+                        return key, record
+                await self.cache.delete(alias)
+
+            metadata = await asyncio.to_thread(extract_metadata, url, self.proxy)
+            key = video_key(metadata, url)
+            record, source = await self.cache.get_with_source(key)
+            if record is not None:
+                if source == "disk":
+                    try:
+                        await self.bot.get_file(record["file_id"])
+                    except TelegramBadRequest:
+                        await self.cache.delete(key)
+                        record = None
+                if record is not None:
+                    await self.cache.set(alias, key)
+                    logger.info("Cache hit for %s video %s", source_name(url), key)
+                    return key, record
+
+            logger.info("Cache miss for %s video %s", source_name(url), key)
+            validate_video(metadata)
+            with tempfile.TemporaryDirectory(
+                prefix="ttblow-",
+                dir=setting("TEMP_DIR", "/tmp"),
+            ) as directory:
+                info, path = await asyncio.to_thread(
+                    download_video,
+                    url,
+                    self.proxy,
+                    directory,
+                )
+                message = await self.bot.send_video(
+                    chat_id=self.cache_chat_id,
+                    video=FSInputFile(path),
+                    supports_streaming=True,
+                    request_timeout=self.telegram_timeout,
+                )
+                record = video_record(info, message.video.file_id)
+                await self.cache.set(key, record)
+                await self.cache.set(alias, key)
+            logger.info("Cached %s video %s as Telegram file_id", source_name(url), key)
             return key, record
 
-        logger.info("Cache miss for %s video %s", source_name(url), key)
-        with tempfile.TemporaryDirectory(prefix="ttblow-") as directory:
-            info, path = await asyncio.to_thread(
-                download_video,
-                url,
-                self.proxy,
-                directory,
-            )
-            message = await self.bot.send_video(
-                chat_id=self.cache_chat_id,
-                video=FSInputFile(path),
-                supports_streaming=True,
-                    request_timeout=self.telegram_timeout,
-            )
-            record = video_record(info, message.video.file_id)
-            await self.cache.set(key, record)
-        logger.info("Cached %s video %s as Telegram file_id", source_name(url), key)
-        return key, record
+    async def close(self):
+        tasks = list(self.inflight.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.inflight.clear()
 
 
 router = Router()
@@ -213,9 +322,12 @@ def report_background_failure(task):
 @router.inline_query()
 async def inline_query(query: InlineQuery, service: VideoService):
     text = query.query or ""
-    logger.info("Inline query %s: %r", query.id, text)
+    logger.info("Inline query %s received (%d chars)", query.id, len(text))
     url = media_url(text)
     if not url:
+        results = []
+    elif not await service.allow_user(query.from_user.id):
+        logger.warning("Rate limit exceeded for user %s", query.from_user.id)
         results = []
     else:
         task = asyncio.create_task(service.result_for(url))
@@ -252,9 +364,9 @@ def make_dispatcher(service):
 
 
 async def webhook_handler(request):
-    secret = setting("TELEGRAM_WEBHOOK_SECRET", "")
+    secret = required("TELEGRAM_WEBHOOK_SECRET")
     received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if secret and not hmac.compare_digest(received, secret):
+    if not received or not hmac.compare_digest(received, secret):
         raise web.HTTPUnauthorized()
 
     bot = request.app["bot"]
@@ -274,22 +386,26 @@ async def start_webhook(app):
     path = setting("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
     await bot.set_webhook(
         f"{base_url}{path}",
-        secret_token=setting("TELEGRAM_WEBHOOK_SECRET") or None,
+        secret_token=required("TELEGRAM_WEBHOOK_SECRET"),
         allowed_updates=["inline_query"],
     )
     logger.info("Webhook configured at %s%s", base_url, path)
 
 
 async def cleanup(app):
+    await app["service"].close()
     await app["cache"].close()
     await app["bot"].session.close()
 
 
-def create_app(bot, dispatcher, cache):
-    app = web.Application()
+def create_app(bot, dispatcher, cache, service):
+    app = web.Application(
+        client_max_size=int(setting("WEBHOOK_MAX_BODY_SIZE", str(1024 * 1024)))
+    )
     app["bot"] = bot
     app["dispatcher"] = dispatcher
     app["cache"] = cache
+    app["service"] = service
     path = setting("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
     app.router.add_post(path, webhook_handler)
     app.router.add_get("/healthz", health_handler)
@@ -298,15 +414,17 @@ def create_app(bot, dispatcher, cache):
     return app
 
 
-async def run_polling(bot, dispatcher, cache):
+async def run_polling(bot, dispatcher, cache, service):
     try:
         await dispatcher.start_polling(bot, allowed_updates=["inline_query"])
     finally:
+        await service.close()
         await cache.close()
         await bot.session.close()
 
 
 def main():
+    cleanup_stale_temp_dirs()
     token = required("TELEGRAM_BOT_TOKEN")
     cache_chat_id = required("TELEGRAM_CACHE_CHAT_ID")
     proxy = setting("YTDLP_PROXY")
@@ -324,10 +442,10 @@ def main():
     )
 
     if setting("BOT_MODE", "webhook") == "polling":
-        asyncio.run(run_polling(bot, dispatcher, cache))
+        asyncio.run(run_polling(bot, dispatcher, cache, service))
         return
 
-    app = create_app(bot, dispatcher, cache)
+    app = create_app(bot, dispatcher, cache, service)
     web.run_app(
         app,
         host=setting("WEB_SERVER_HOST", "127.0.0.1"),

@@ -17,7 +17,7 @@ TikTok → yt-dlp + proxy → /tmp → закрытый Telegram-канал
 - `cachetools.TTLCache` — быстрый кэш в RAM;
 - `diskcache` — локальный кэш на диске, переживающий перезапуск.
 
-В кэше хранятся только TikTok ID и Telegram `file_id`. Видео хранится у Telegram.
+В кэше хранятся только platform ID и Telegram `file_id`. Видео хранится у Telegram.
 
 ## Настройка
 
@@ -40,6 +40,8 @@ TELEGRAM_CACHE_CHAT_ID=@my_cache_channel
 ```
 
 Proxy для `yt-dlp` и Telegram API опционален. Если `TELEGRAM_PROXY` не указан, для Bot API используется `YTDLP_PROXY`; если оба пустые, запросы идут напрямую.
+
+По умолчанию одновременно обрабатываются 2 загрузки, максимальный размер видео — 50 MB, длительность — 600 секунд, лимит пользователя — 10 запросов в минуту. Эти значения настраиваются через `MAX_CONCURRENT_JOBS`, `MAX_FILE_SIZE`, `MAX_DURATION`, `RATE_LIMIT_COUNT` и `RATE_LIMIT_WINDOW`.
 
 ## Запуск
 
@@ -69,7 +71,7 @@ docker logs -f ttblow
 uv run main.py
 ```
 
-Сейчас production запускается через polling. Позже polling можно заменить на webhook через `aiohttp`; для этого понадобится публичный HTTPS-адрес и параметры `PUBLIC_BASE_URL`, `WEBHOOK_PATH` и `TELEGRAM_WEBHOOK_SECRET`.
+Сейчас production запускается через polling. Позже polling можно заменить на webhook через `aiohttp`; для этого понадобится публичный HTTPS-адрес и обязательный `TELEGRAM_WEBHOOK_SECRET` вместе с `PUBLIC_BASE_URL` и `WEBHOOK_PATH`.
 
 В Telegram:
 
@@ -78,4 +80,4 @@ uv run main.py
 @имя_бота https://www.instagram.com/reel/ABC123/
 ```
 
-Поддерживаются публичные TikTok-видео и Instagram Reels. Приватные Instagram-публикации и ролики, для которых Instagram требует login/cookies, не поддерживаются без отдельной настройки cookies. Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram. При ошибках и таймауте бот отвечает пустым списком inline-результатов и пишет подробности только в лог. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
+Поддерживаются публичные TikTok-видео и Instagram Reels. Приватные Instagram-публикации и ролики, для которых Instagram требует login/cookies, не поддерживаются без отдельной настройки cookies. Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram; старые каталоги чистятся при запуске. При ошибках и таймауте бот отвечает пустым списком inline-результатов и пишет подробности только в лог. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
