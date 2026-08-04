@@ -25,7 +25,6 @@ from cachetools import TTLCache
 from diskcache import Cache
 from dotenv import load_dotenv
 
-
 load_dotenv()
 uvloop.install()
 
@@ -58,9 +57,8 @@ def media_url(text):
     if host == "tiktok.com" or host.endswith(".tiktok.com"):
         return url
     if (
-        (host == "instagram.com" or host.endswith(".instagram.com"))
-        and parsed.path.lower().startswith(("/reel/", "/reels/"))
-    ):
+        host == "instagram.com" or host.endswith(".instagram.com")
+    ) and parsed.path.lower().startswith(("/reel/", "/reels/")):
         return url
     return None
 
@@ -111,7 +109,7 @@ def extractor_options(proxy, directory=None):
         "socket_timeout": int(setting("YTDLP_SOCKET_TIMEOUT", "30")),
         "retries": int(setting("YTDLP_RETRIES", "1")),
         "fragment_retries": int(setting("YTDLP_RETRIES", "1")),
-            "max_filesize": int(setting("MAX_FILE_SIZE", str(50 * 1024 * 1024))),
+        "max_filesize": int(setting("MAX_FILE_SIZE", str(50 * 1024 * 1024))),
     }
     if proxy:
         options["proxy"] = proxy
@@ -145,9 +143,9 @@ def video_record(info, file_id):
     return {
         "file_id": file_id,
         "title": (info.get("title") or "TikTok video")[:256],
-        "description": (
-            f"@{info['uploader']}" if info.get("uploader") else "TikTok"
-        )[:255],
+        "description": (f"@{info['uploader']}" if info.get("uploader") else "TikTok")[
+            :255
+        ],
         "video_width": info.get("width"),
         "video_height": info.get("height"),
         "video_duration": int(info["duration"]) if info.get("duration") else None,
@@ -337,7 +335,7 @@ async def inline_query(query: InlineQuery, service: VideoService):
                 timeout=service.inline_timeout,
             )
             results = [cached_result(key, record)]
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.add_done_callback(report_background_failure)
             logger.warning(
                 "Inline query %s timed out after %ss",
@@ -351,7 +349,9 @@ async def inline_query(query: InlineQuery, service: VideoService):
 
     try:
         await query.answer(results, cache_time=0, is_personal=True)
-        logger.info("Answered inline query %s with %d result(s)", query.id, len(results))
+        logger.info(
+            "Answered inline query %s with %d result(s)", query.id, len(results)
+        )
     except Exception as error:
         logger.error("Failed to answer inline query %s: %s", query.id, error)
 

@@ -38,7 +38,10 @@ class MainTests(unittest.TestCase):
 
             service._resolve = resolve
             results = await asyncio.gather(
-                *(service.result_for("https://www.tiktok.com/@u/video/123") for _ in range(5))
+                *(
+                    service.result_for("https://www.tiktok.com/@u/video/123")
+                    for _ in range(5)
+                )
             )
             self.assertEqual(calls, 1)
             self.assertEqual(results[0], results[-1])

@@ -71,6 +71,14 @@ docker logs -f ttblow
 uv run main.py
 ```
 
+Проверки кода:
+
+```bash
+uv run ruff format --check main.py test_main.py
+uv run ruff check main.py test_main.py
+uv run python -m unittest -v test_main.py
+```
+
 Сейчас production запускается через polling. Позже polling можно заменить на webhook через `aiohttp`; для этого понадобится публичный HTTPS-адрес и обязательный `TELEGRAM_WEBHOOK_SECRET` вместе с `PUBLIC_BASE_URL` и `WEBHOOK_PATH`.
 
 В Telegram:
