@@ -24,12 +24,10 @@ class MainTests(unittest.TestCase):
             main.tiktok_photo_url("https://www.tiktok.com/@user/video/123")
         )
 
-    def test_switch_parameter(self):
-        service = main.VideoService(object(), object(), None, "chat")
-        url = "https://www.tiktok.com/@user/video/123"
-        parameter = service.switch_parameter(url)
-        self.assertEqual(len(parameter), 32)
-        self.assertEqual(service.switch_url(parameter), url)
+    def test_pending_result(self):
+        result = main.pending_result("task-123", "placeholder-file-id")
+        self.assertEqual(result.id, "task-123")
+        self.assertEqual(result.photo_file_id, "placeholder-file-id")
 
     def test_slideshow_frame_rate(self):
         self.assertAlmostEqual(main.slideshow_frame_rate(8, 12), 2 / 3)
