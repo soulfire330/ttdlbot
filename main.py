@@ -344,7 +344,7 @@ class VideoService:
         self.cache = cache
         self.proxy = proxy
         self.cache_chat_id = cache_chat_id
-        self.inline_timeout = int(setting("INLINE_TIMEOUT", "20"))
+        self.inline_timeout = min(int(setting("INLINE_TIMEOUT", "8")), 8)
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight = {}
