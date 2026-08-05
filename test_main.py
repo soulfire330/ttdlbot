@@ -39,6 +39,13 @@ class MainTests(unittest.TestCase):
             "instagram:123",
         )
 
+    def test_pm_task_id(self):
+        service = main.VideoService(object(), object(), None, "chat")
+        url = "https://www.tiktok.com/@user/video/123"
+        task_id = service.pm_task_id(url)
+        self.assertEqual(len(task_id), 32)
+        self.assertEqual(service.pm_url(task_id), url)
+
     def test_singleflight(self):
         async def check():
             service = main.VideoService(object(), object(), None, "chat")

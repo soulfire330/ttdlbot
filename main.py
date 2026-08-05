@@ -17,10 +17,12 @@ import yt_dlp
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import CommandObject, CommandStart
 from aiogram.types import (
     FSInputFile,
     InlineQuery,
     InlineQueryResultCachedVideo,
+    Message,
     Update,
 )
 from aiohttp import web
@@ -363,6 +365,10 @@ class VideoService:
         self.cache_chat_id = cache_chat_id
         self.inline_timeout = min(int(setting("INLINE_TIMEOUT", "9")), 9)
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
+        self.pm_urls = TTLCache(
+            maxsize=int(setting("PM_TASK_MAXSIZE", "10000")),
+            ttl=int(setting("PM_TASK_TTL", str(24 * 60 * 60))),
+        )
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight = {}
         self.rate_limit = TTLCache(
@@ -379,6 +385,14 @@ class VideoService:
                 return False
             self.rate_limit[user_id] = count + 1
             return True
+
+    def pm_task_id(self, url):
+        task_id = hashlib.sha256(normalized_url(url).encode()).hexdigest()[:32]
+        self.pm_urls[task_id] = url
+        return task_id
+
+    def pm_url(self, task_id):
+        return self.pm_urls.get(task_id)
 
     async def result_for(self, url):
         request_key = normalized_url(url)
@@ -531,6 +545,8 @@ async def inline_query(query: InlineQuery, service: VideoService):
     text = query.query or ""
     logger.info("Inline query %s received (%d chars)", query.id, len(text))
     url = media_url(text)
+    switch_pm_text = None
+    switch_pm_parameter = None
     if not url:
         results = []
     elif not await service.allow_user(query.from_user.id):
@@ -546,10 +562,13 @@ async def inline_query(query: InlineQuery, service: VideoService):
             results = [cached_result(key, record)]
         except TimeoutError:
             task.add_done_callback(report_background_failure)
+            switch_pm_text = "⏳ Видео слишком длинное. Отправить в ЛС."
+            switch_pm_parameter = service.pm_task_id(url)
             logger.warning(
-                "Inline query %s timed out after %ss",
+                "Inline query %s timed out after %ss; task %s moved to PM",
                 query.id,
                 service.inline_timeout,
+                switch_pm_parameter,
             )
             results = []
         except Exception as error:
@@ -557,12 +576,43 @@ async def inline_query(query: InlineQuery, service: VideoService):
             results = []
 
     try:
-        await query.answer(results, cache_time=0, is_personal=True)
+        await query.answer(
+            results,
+            cache_time=0,
+            is_personal=True,
+            switch_pm_text=switch_pm_text,
+            switch_pm_parameter=switch_pm_parameter,
+        )
         logger.info(
             "Answered inline query %s with %d result(s)", query.id, len(results)
         )
     except Exception as error:
         logger.error("Failed to answer inline query %s: %s", query.id, error)
+
+
+@router.message(CommandStart())
+async def private_start(
+    message: Message, command: CommandObject, service: VideoService
+):
+    url = service.pm_url(command.args or "")
+    if not url:
+        await message.answer(
+            "Ссылка устарела. Отправьте её через inline-режим ещё раз."
+        )
+        return
+    try:
+        _, record = await service.result_for(url)
+        await service.bot.send_video(
+            chat_id=message.chat.id,
+            video=record["file_id"],
+            caption="Готово!",
+        )
+        logger.info("Sent task %s to private chat %s", command.args, message.chat.id)
+    except Exception as error:
+        logger.error(
+            "Failed to send private video for task %s: %s", command.args, error
+        )
+        await message.answer("❌ Не удалось обработать видео. Попробуйте ещё раз.")
 
 
 def make_dispatcher(service):
@@ -596,7 +646,7 @@ async def start_webhook(app):
     await bot.set_webhook(
         f"{base_url}{path}",
         secret_token=required("TELEGRAM_WEBHOOK_SECRET"),
-        allowed_updates=["inline_query"],
+        allowed_updates=["inline_query", "message"],
     )
     logger.info("Webhook configured at %s%s", base_url, path)
 
@@ -625,7 +675,7 @@ def create_app(bot, dispatcher, cache, service):
 
 async def run_polling(bot, dispatcher, cache, service):
     try:
-        await dispatcher.start_polling(bot, allowed_updates=["inline_query"])
+        await dispatcher.start_polling(bot, allowed_updates=["inline_query", "message"])
     finally:
         await service.close()
         await cache.close()
