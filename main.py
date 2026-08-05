@@ -20,6 +20,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.types import (
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultCachedVideo,
     Message,
@@ -622,6 +624,16 @@ async def private_start(
             chat_id=message.chat.id,
             video=record["file_id"],
             caption="Готово!",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📤 Вставить видео в чат",
+                            switch_inline_query=url,
+                        )
+                    ]
+                ]
+            ),
         )
     except Exception as error:
         logger.error("Failed to send private video: %s", error)
