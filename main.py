@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -184,13 +185,14 @@ def download_file(url, proxy, path):
 
 
 def download_images(images, proxy, directory):
-    return [
-        (
-            image,
-            download_file(image["url"], proxy, Path(directory) / f"{index}.jpg"),
+    def download(index_image):
+        index, image = index_image
+        return image, download_file(
+            image["url"], proxy, Path(directory) / f"{index}.jpg"
         )
-        for index, image in enumerate(images, 1)
-    ]
+
+    with ThreadPoolExecutor(max_workers=min(4, len(images))) as executor:
+        return list(executor.map(download, enumerate(images, 1)))
 
 
 def audio_url(info):
@@ -238,7 +240,7 @@ def download_slideshow(info, images, proxy, directory):
                 "-map",
                 "1:a:0",
                 "-vf",
-                "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
                 "-r",
                 "30",
                 "-c:v",
@@ -263,7 +265,7 @@ def download_slideshow(info, images, proxy, directory):
     if result.returncode or not output_path.is_file():
         error = result.stderr.strip()[-500:]
         raise ValueError(f"ffmpeg не собрал слайдшоу: {error}")
-    info = {**info, "ext": "mp4", "width": 1080, "height": 1920}
+    info = {**info, "ext": "mp4", "width": 720, "height": 1280}
     validate_video(info, output_path)
     return info, output_path
 
