@@ -218,8 +218,15 @@ def download_slideshow(info, images, proxy, directory):
     if not source_audio:
         raise ValueError("TikTok photo has no downloadable audio")
     frame_rate = slideshow_frame_rate(len(images), duration)
+    stage_started = time.perf_counter()
     audio_path = download_file(source_audio, proxy, Path(directory) / "audio.mp3")
+    logger.info(
+        "Downloaded TikTok audio %s in %.2fs",
+        info.get("id"),
+        time.perf_counter() - stage_started,
+    )
     output_path = Path(directory) / "slideshow.mp4"
+    stage_started = time.perf_counter()
     try:
         result = subprocess.run(
             [
@@ -265,6 +272,12 @@ def download_slideshow(info, images, proxy, directory):
     if result.returncode or not output_path.is_file():
         error = result.stderr.strip()[-500:]
         raise ValueError(f"ffmpeg не собрал слайдшоу: {error}")
+    logger.info(
+        "Built TikTok slideshow %s in %.2fs (%d bytes)",
+        info.get("id"),
+        time.perf_counter() - stage_started,
+        output_path.stat().st_size,
+    )
     info = {**info, "ext": "mp4", "width": 720, "height": 1280}
     validate_video(info, output_path)
     return info, output_path
@@ -388,6 +401,7 @@ class VideoService:
 
     async def _resolve(self, url):
         async with self.jobs:
+            job_started = time.perf_counter()
             alias = f"alias:{normalized_url(url)}"
             key = await self.cache.get(alias)
             if key:
@@ -399,8 +413,14 @@ class VideoService:
                         return key, record
                 await self.cache.delete(alias)
 
+            stage_started = time.perf_counter()
             metadata = await asyncio.to_thread(extract_metadata, url, self.proxy)
             key = video_key(metadata, url)
+            logger.info(
+                "Prepared TikTok metadata %s in %.2fs",
+                key,
+                time.perf_counter() - stage_started,
+            )
             record, source = await self.cache.get_with_source(key)
             if record is not None:
                 record = await self.valid_cached_record(key, record, source)
@@ -415,11 +435,18 @@ class VideoService:
                 dir=setting("TEMP_DIR", "/tmp"),
             ) as directory:
                 if metadata.get("media_type") == "photo":
+                    stage_started = time.perf_counter()
                     images = await asyncio.to_thread(
                         download_images,
                         metadata["image_urls"],
                         self.proxy,
                         directory,
+                    )
+                    logger.info(
+                        "Downloaded %d TikTok images %s in %.2fs",
+                        len(images),
+                        key,
+                        time.perf_counter() - stage_started,
                     )
                     info, path = await asyncio.to_thread(
                         download_slideshow,
@@ -429,6 +456,7 @@ class VideoService:
                         directory,
                     )
                 else:
+                    stage_started = time.perf_counter()
                     validate_video(metadata)
                     info, path = await asyncio.to_thread(
                         download_video,
@@ -436,6 +464,12 @@ class VideoService:
                         self.proxy,
                         directory,
                     )
+                    logger.info(
+                        "Downloaded TikTok video %s in %.2fs",
+                        key,
+                        time.perf_counter() - stage_started,
+                    )
+                stage_started = time.perf_counter()
                 message = await self.bot.send_video(
                     chat_id=self.cache_chat_id,
                     video=FSInputFile(path),
@@ -443,9 +477,19 @@ class VideoService:
                     request_timeout=self.telegram_timeout,
                 )
                 record = video_record(info, message.video.file_id)
+                logger.info(
+                    "Uploaded Telegram video %s in %.2fs",
+                    key,
+                    time.perf_counter() - stage_started,
+                )
                 await self.cache.set(key, record)
                 await self.cache.set(alias, key)
-            logger.info("Cached %s media %s as Telegram file_id", source_name(url), key)
+            logger.info(
+                "Cached %s media %s as Telegram file_id in %.2fs",
+                source_name(url),
+                key,
+                time.perf_counter() - job_started,
+            )
             return key, record
 
     async def close(self):
