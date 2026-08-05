@@ -30,7 +30,6 @@ TELEGRAM_BOT_TOKEN=токен_от_BotFather
 YTDLP_PROXY=http://proxy.example:8080
 TELEGRAM_PROXY=http://proxy.example:8080
 TELEGRAM_CACHE_CHAT_ID=-1001234567890
-BOT_MODE=polling
 ```
 
 Для публичного канала вместо числового ID можно использовать его username:
@@ -41,7 +40,7 @@ TELEGRAM_CACHE_CHAT_ID=@my_cache_channel
 
 Proxy для `yt-dlp` и Telegram API опционален. Если `TELEGRAM_PROXY` не указан, для Bot API используется `YTDLP_PROXY`; если оба пустые, запросы идут напрямую.
 
-По умолчанию одновременно обрабатываются 2 загрузки, максимальный размер видео — 50 MB, длительность — 600 секунд, лимит пользователя — 10 запросов в минуту. Inline-ответ ожидает максимум 9 секунд, после чего предлагает продолжить рендер в личном чате через `switch_pm`. Эти значения настраиваются через `MAX_CONCURRENT_JOBS`, `MAX_FILE_SIZE`, `MAX_DURATION`, `RATE_LIMIT_COUNT` и `RATE_LIMIT_WINDOW`.
+По умолчанию одновременно обрабатываются 2 загрузки, максимальный размер видео — 50 MB, длительность — 600 секунд, лимит пользователя — 10 запросов в минуту. Inline-ответ ожидает максимум 9 секунд, после чего предлагает продолжить рендер в личном чате через `switch_pm`. Эти значения настраиваются через `MAX_CONCURRENT_JOBS`, `MAX_FILE_SIZE`, `MAX_DURATION`, `RATE_LIMIT_COUNT`, `RATE_LIMIT_WINDOW`, `PM_TASK_MAXSIZE` и `PM_TASK_TTL`.
 
 ## Запуск
 
@@ -79,7 +78,7 @@ uv run ruff check main.py test_main.py
 uv run python -m unittest -v test_main.py
 ```
 
-Сейчас production запускается через polling. Позже polling можно заменить на webhook через `aiohttp`; для этого понадобится публичный HTTPS-адрес и обязательный `TELEGRAM_WEBHOOK_SECRET` вместе с `PUBLIC_BASE_URL` и `WEBHOOK_PATH`.
+Production запускается через polling.
 
 В Telegram:
 

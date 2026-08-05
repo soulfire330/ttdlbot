@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import main
 
@@ -39,12 +40,38 @@ class MainTests(unittest.TestCase):
             "instagram:123",
         )
 
-    def test_pm_task_id(self):
+    def test_pm_task_id_is_user_bound(self):
         service = main.VideoService(object(), object(), None, "chat")
         url = "https://www.tiktok.com/@user/video/123"
-        task_id = service.pm_task_id(url)
+        task_id = service.pm_task_id(url, 42)
         self.assertEqual(len(task_id), 32)
-        self.assertEqual(service.pm_url(task_id), url)
+        self.assertEqual(service.claim_pm_url(task_id, 42), url)
+        self.assertIsNone(service.claim_pm_url(task_id, 42))
+
+        other_task_id = service.pm_task_id(url, 42)
+        self.assertIsNone(service.claim_pm_url(other_task_id, 43))
+        self.assertEqual(service.claim_pm_url(other_task_id, 42), url)
+
+    def test_private_start_rejects_other_user(self):
+        async def check():
+            service = main.VideoService(object(), object(), None, "chat")
+            task_id = service.pm_task_id("https://www.tiktok.com/@u/video/123", 42)
+            answers = []
+
+            async def answer(text):
+                answers.append(text)
+
+            message = SimpleNamespace(
+                chat=SimpleNamespace(id=7, type="private"),
+                from_user=SimpleNamespace(id=43),
+                answer=answer,
+            )
+            command = SimpleNamespace(args=task_id)
+            await main.private_start(message, command, service)
+            self.assertEqual(len(answers), 1)
+            self.assertIn("устарела", answers[0])
+
+        asyncio.run(check())
 
     def test_singleflight(self):
         async def check():

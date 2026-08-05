@@ -23,9 +23,7 @@ COPY --chown=app:app main.py ./
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DISK_CACHE_DIR=/data/cache \
-    WEB_SERVER_HOST=0.0.0.0
+    DISK_CACHE_DIR=/data/cache
 
 USER app
-EXPOSE 8080
 CMD ["python", "main.py"]

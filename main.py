@@ -1,9 +1,9 @@
 import asyncio
 import hashlib
-import hmac
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-import uvloop
 import yt_dlp
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -23,23 +22,18 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultCachedVideo,
     Message,
-    Update,
 )
-from aiohttp import web
 from cachetools import TTLCache
 from diskcache import Cache
 from dotenv import load_dotenv
 
 load_dotenv()
-uvloop.install()
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-DEFAULT_WEBHOOK_PATH = "/telegram/webhook"
 
 
 def setting(name, default=None):
@@ -386,13 +380,19 @@ class VideoService:
             self.rate_limit[user_id] = count + 1
             return True
 
-    def pm_task_id(self, url):
-        task_id = hashlib.sha256(normalized_url(url).encode()).hexdigest()[:32]
-        self.pm_urls[task_id] = url
+    def pm_task_id(self, url, user_id):
+        task_id = secrets.token_urlsafe(24)
+        while task_id in self.pm_urls:
+            task_id = secrets.token_urlsafe(24)
+        self.pm_urls[task_id] = (user_id, url)
         return task_id
 
-    def pm_url(self, task_id):
-        return self.pm_urls.get(task_id)
+    def claim_pm_url(self, task_id, user_id):
+        task = self.pm_urls.get(task_id)
+        if not task or task[0] != user_id:
+            return None
+        self.pm_urls.pop(task_id, None)
+        return task[1]
 
     async def result_for(self, url):
         request_key = normalized_url(url)
@@ -562,8 +562,8 @@ async def inline_query(query: InlineQuery, service: VideoService):
             results = [cached_result(key, record)]
         except TimeoutError:
             task.add_done_callback(report_background_failure)
-            switch_pm_text = "⏳ Видео слишком длинное. Отправить в ЛС."
-            switch_pm_parameter = service.pm_task_id(url)
+            switch_pm_text = "⏳ Видео долго обрабатывается. Отправить в ЛС."
+            switch_pm_parameter = service.pm_task_id(url, query.from_user.id)
             logger.warning(
                 "Inline query %s timed out after %ss; task %s moved to PM",
                 query.id,
@@ -594,7 +594,9 @@ async def inline_query(query: InlineQuery, service: VideoService):
 async def private_start(
     message: Message, command: CommandObject, service: VideoService
 ):
-    url = service.pm_url(command.args or "")
+    if message.chat.type != "private":
+        return
+    url = service.claim_pm_url(command.args or "", message.from_user.id)
     if not url:
         await message.answer(
             "Ссылка устарела. Отправьте её через inline-режим ещё раз."
@@ -622,67 +624,7 @@ def make_dispatcher(service):
     return dispatcher
 
 
-async def webhook_handler(request):
-    secret = required("TELEGRAM_WEBHOOK_SECRET")
-    received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not received or not hmac.compare_digest(received, secret):
-        raise web.HTTPUnauthorized()
-
-    bot = request.app["bot"]
-    dispatcher = request.app["dispatcher"]
-    update = Update.model_validate(await request.json())
-    await dispatcher.feed_update(bot, update)
-    return web.json_response({"ok": True})
-
-
-async def health_handler(request):
-    return web.json_response({"ok": True})
-
-
-async def start_webhook(app):
-    bot = app["bot"]
-    base_url = required("PUBLIC_BASE_URL").rstrip("/")
-    path = setting("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
-    await bot.set_webhook(
-        f"{base_url}{path}",
-        secret_token=required("TELEGRAM_WEBHOOK_SECRET"),
-        allowed_updates=["inline_query", "message"],
-    )
-    logger.info("Webhook configured at %s%s", base_url, path)
-
-
-async def cleanup(app):
-    await app["service"].close()
-    await app["cache"].close()
-    await app["bot"].session.close()
-
-
-def create_app(bot, dispatcher, cache, service):
-    app = web.Application(
-        client_max_size=int(setting("WEBHOOK_MAX_BODY_SIZE", str(1024 * 1024)))
-    )
-    app["bot"] = bot
-    app["dispatcher"] = dispatcher
-    app["cache"] = cache
-    app["service"] = service
-    path = setting("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
-    app.router.add_post(path, webhook_handler)
-    app.router.add_get("/healthz", health_handler)
-    app.on_startup.append(start_webhook)
-    app.on_cleanup.append(cleanup)
-    return app
-
-
-async def run_polling(bot, dispatcher, cache, service):
-    try:
-        await dispatcher.start_polling(bot, allowed_updates=["inline_query", "message"])
-    finally:
-        await service.close()
-        await cache.close()
-        await bot.session.close()
-
-
-def main():
+async def main():
     cleanup_stale_temp_dirs()
     token = required("TELEGRAM_BOT_TOKEN")
     cache_chat_id = required("TELEGRAM_CACHE_CHAT_ID")
@@ -700,17 +642,13 @@ def main():
         setting("DISK_CACHE_DIR", "data/cache"),
     )
 
-    if setting("BOT_MODE", "webhook") == "polling":
-        asyncio.run(run_polling(bot, dispatcher, cache, service))
-        return
-
-    app = create_app(bot, dispatcher, cache, service)
-    web.run_app(
-        app,
-        host=setting("WEB_SERVER_HOST", "127.0.0.1"),
-        port=int(setting("WEB_SERVER_PORT", "8080")),
-    )
+    try:
+        await dispatcher.start_polling(bot, allowed_updates=["inline_query", "message"])
+    finally:
+        await service.close()
+        await cache.close()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
