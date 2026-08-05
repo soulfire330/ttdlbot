@@ -10,7 +10,7 @@ COPY main.py ./
 
 FROM python:3.13-alpine
 
-RUN apk add --no-cache libffi libstdc++ \
+RUN apk add --no-cache ffmpeg libffi libstdc++ \
     && addgroup -S app \
     && adduser -S -G app app \
     && mkdir -p /app /data/cache \

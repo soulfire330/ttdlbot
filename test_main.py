@@ -15,6 +15,20 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(main.media_url("https://www.instagram.com/p/ABC/"))
         self.assertIsNone(main.media_url("https://example.com/reel/ABC/"))
 
+    def test_tiktok_photo_url(self):
+        self.assertEqual(
+            main.tiktok_photo_url("https://www.tiktok.com/@user/photo/123?_r=1"),
+            "https://www.tiktok.com/@user/video/123?_r=1",
+        )
+        self.assertIsNone(
+            main.tiktok_photo_url("https://www.tiktok.com/@user/video/123")
+        )
+
+    def test_slideshow_frame_rate(self):
+        self.assertAlmostEqual(main.slideshow_frame_rate(8, 12), 2 / 3)
+        with self.assertRaises(ValueError):
+            main.slideshow_frame_rate(0, 12)
+
     def test_platform_cache_keys(self):
         self.assertEqual(
             main.video_key({"id": "123"}, "https://www.tiktok.com/@u/video/123"),

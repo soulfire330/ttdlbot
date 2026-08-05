@@ -3,7 +3,9 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +75,16 @@ def normalized_url(url):
     return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
 
 
+def tiktok_photo_url(url):
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not (host == "tiktok.com" or host.endswith(".tiktok.com")):
+        return None
+    if not re.fullmatch(r"/@[\w.-]+/photo/\d+/?", parsed.path):
+        return None
+    return parsed._replace(path=parsed.path.replace("/photo/", "/video/", 1)).geturl()
+
+
 def validate_video(info, path=None):
     max_duration = int(setting("MAX_DURATION", "600"))
     duration = info.get("duration")
@@ -119,8 +131,141 @@ def extractor_options(proxy, directory=None):
 
 
 def extract_metadata(url, proxy):
+    photo_url = tiktok_photo_url(url)
+    host = (urlparse(url).hostname or "").lower()
+    if not photo_url and host in {"vm.tiktok.com", "vt.tiktok.com"}:
+        with yt_dlp.YoutubeDL(extractor_options(proxy)) as ydl:
+            response = ydl.urlopen(url)
+            try:
+                photo_url = tiktok_photo_url(response.url)
+            finally:
+                response.close()
+    if not photo_url:
+        with yt_dlp.YoutubeDL(extractor_options(proxy)) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    video_id = urlparse(photo_url).path.rstrip("/").rsplit("/", 1)[-1]
     with yt_dlp.YoutubeDL(extractor_options(proxy)) as ydl:
-        return ydl.extract_info(url, download=False)
+        extractor = ydl.get_info_extractor("TikTok")
+        raw_info, status = extractor._extract_web_data_and_status(photo_url, video_id)
+        if status or not raw_info:
+            raise ValueError(f"TikTok photo is unavailable (status {status})")
+        info = extractor._parse_aweme_video_web(raw_info, photo_url, video_id)
+        info["image_urls"] = [
+            {
+                "url": image["imageURL"]["urlList"][0],
+                "width": image.get("imageWidth"),
+                "height": image.get("imageHeight"),
+            }
+            for image in raw_info.get("imagePost", {}).get("images", [])
+            if image.get("imageURL", {}).get("urlList")
+        ]
+    if not info["image_urls"]:
+        raise ValueError("TikTok photo has no downloadable images")
+    info["media_type"] = "photo"
+    return info
+
+
+def download_file(url, proxy, path):
+    max_size = int(setting("MAX_FILE_SIZE", str(50 * 1024 * 1024)))
+    with yt_dlp.YoutubeDL(extractor_options(proxy)) as ydl:
+        response = ydl.urlopen(url)
+        size = 0
+        try:
+            with path.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > max_size:
+                        raise ValueError(f"file size exceeds {max_size} bytes")
+                    output.write(chunk)
+        finally:
+            response.close()
+    return path
+
+
+def download_images(images, proxy, directory):
+    return [
+        (
+            image,
+            download_file(image["url"], proxy, Path(directory) / f"{index}.jpg"),
+        )
+        for index, image in enumerate(images, 1)
+    ]
+
+
+def audio_url(info):
+    return next(
+        (
+            format_info["url"]
+            for format_info in info.get("formats", [])
+            if format_info.get("vcodec") == "none" and format_info.get("url")
+        ),
+        None,
+    )
+
+
+def slideshow_frame_rate(image_count, duration):
+    if image_count <= 0 or duration <= 0:
+        raise ValueError("slideshow needs images and a positive duration")
+    return image_count / duration
+
+
+def download_slideshow(info, images, proxy, directory):
+    source_audio = audio_url(info)
+    duration = float(info.get("duration") or 0)
+    if not source_audio:
+        raise ValueError("TikTok photo has no downloadable audio")
+    frame_rate = slideshow_frame_rate(len(images), duration)
+    audio_path = download_file(source_audio, proxy, Path(directory) / "audio.mp3")
+    output_path = Path(directory) / "slideshow.mp4"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-framerate",
+                str(frame_rate),
+                "-start_number",
+                "1",
+                "-i",
+                str(Path(directory) / "%d.jpg"),
+                "-i",
+                str(audio_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-vf",
+                "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "-r",
+                "30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-tune",
+                "stillimage",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-shortest",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("ffmpeg не установлен") from error
+    if result.returncode or not output_path.is_file():
+        error = result.stderr.strip()[-500:]
+        raise ValueError(f"ffmpeg не собрал слайдшоу: {error}")
+    info = {**info, "ext": "mp4", "width": 1080, "height": 1920}
+    validate_video(info, output_path)
+    return info, output_path
 
 
 def download_video(url, proxy, directory):
@@ -227,6 +372,18 @@ class VideoService:
             task.add_done_callback(lambda _: self.inflight.pop(request_key, None))
         return await asyncio.shield(task)
 
+    async def valid_cached_record(self, key, record, source):
+        if record.get("type") == "photo":
+            await self.cache.delete(key)
+            return None
+        if source == "disk":
+            try:
+                await self.bot.get_file(record["file_id"])
+            except TelegramBadRequest:
+                await self.cache.delete(key)
+                return None
+        return record
+
     async def _resolve(self, url):
         async with self.jobs:
             alias = f"alias:{normalized_url(url)}"
@@ -234,15 +391,9 @@ class VideoService:
             if key:
                 record, source = await self.cache.get_with_source(key)
                 if record is not None:
-                    if source == "disk":
-                        try:
-                            await self.bot.get_file(record["file_id"])
-                        except TelegramBadRequest:
-                            await self.cache.delete(key)
-                            await self.cache.delete(alias)
-                            record = None
+                    record = await self.valid_cached_record(key, record, source)
                     if record is not None:
-                        logger.info("Cache hit for %s video %s", source_name(url), key)
+                        logger.info("Cache hit for %s media %s", source_name(url), key)
                         return key, record
                 await self.cache.delete(alias)
 
@@ -250,29 +401,39 @@ class VideoService:
             key = video_key(metadata, url)
             record, source = await self.cache.get_with_source(key)
             if record is not None:
-                if source == "disk":
-                    try:
-                        await self.bot.get_file(record["file_id"])
-                    except TelegramBadRequest:
-                        await self.cache.delete(key)
-                        record = None
+                record = await self.valid_cached_record(key, record, source)
                 if record is not None:
                     await self.cache.set(alias, key)
-                    logger.info("Cache hit for %s video %s", source_name(url), key)
+                    logger.info("Cache hit for %s media %s", source_name(url), key)
                     return key, record
 
-            logger.info("Cache miss for %s video %s", source_name(url), key)
-            validate_video(metadata)
+            logger.info("Cache miss for %s media %s", source_name(url), key)
             with tempfile.TemporaryDirectory(
                 prefix="ttblow-",
                 dir=setting("TEMP_DIR", "/tmp"),
             ) as directory:
-                info, path = await asyncio.to_thread(
-                    download_video,
-                    url,
-                    self.proxy,
-                    directory,
-                )
+                if metadata.get("media_type") == "photo":
+                    images = await asyncio.to_thread(
+                        download_images,
+                        metadata["image_urls"],
+                        self.proxy,
+                        directory,
+                    )
+                    info, path = await asyncio.to_thread(
+                        download_slideshow,
+                        metadata,
+                        images,
+                        self.proxy,
+                        directory,
+                    )
+                else:
+                    validate_video(metadata)
+                    info, path = await asyncio.to_thread(
+                        download_video,
+                        url,
+                        self.proxy,
+                        directory,
+                    )
                 message = await self.bot.send_video(
                     chat_id=self.cache_chat_id,
                     video=FSInputFile(path),
@@ -282,7 +443,7 @@ class VideoService:
                 record = video_record(info, message.video.file_id)
                 await self.cache.set(key, record)
                 await self.cache.set(alias, key)
-            logger.info("Cached %s video %s as Telegram file_id", source_name(url), key)
+            logger.info("Cached %s media %s as Telegram file_id", source_name(url), key)
             return key, record
 
     async def close(self):

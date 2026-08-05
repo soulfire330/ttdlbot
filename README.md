@@ -1,6 +1,6 @@
 # ttblow
 
-Inline Telegram-бот для TikTok и Instagram Reels. Бот скачивает видео через `yt-dlp` и optional proxy, загружает его в закрытый Telegram-канал, а пользователю возвращает `file_id` через `InlineQueryResultCachedVideo`.
+Inline Telegram-бот для TikTok и Instagram Reels. Бот скачивает видео и превращает TikTok-фотоподборки в MP4-слайдшоу с оригинальной музыкой через `yt-dlp` и `ffmpeg`, загружает результат в закрытый Telegram-канал, а пользователю возвращает cached inline-результат.
 
 ## Как это работает
 
@@ -65,7 +65,7 @@ cp .env.example .env
 docker logs -f ttblow
 ```
 
-Для ручного запуска без Docker:
+Для ручного запуска без Docker нужен установленный `ffmpeg` в `PATH`:
 
 ```bash
 uv run main.py
@@ -88,4 +88,4 @@ uv run python -m unittest -v test_main.py
 @имя_бота https://www.instagram.com/reel/ABC123/
 ```
 
-Поддерживаются публичные TikTok-видео и Instagram Reels. Приватные Instagram-публикации и ролики, для которых Instagram требует login/cookies, не поддерживаются без отдельной настройки cookies. Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram; старые каталоги чистятся при запуске. При ошибках и таймауте бот отвечает пустым списком inline-результатов и пишет подробности только в лог. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
+Поддерживаются публичные TikTok-видео, TikTok-фотоподборки и Instagram Reels. Фотоподборки собираются в одно видео со звуком TikTok; в Docker-образ входит `ffmpeg`. Приватные Instagram-публикации и ролики, для которых Instagram требует login/cookies, не поддерживаются без отдельной настройки cookies. Временные файлы создаются в `/tmp` и удаляются после загрузки в Telegram; старые каталоги чистятся при запуске. При ошибках и таймауте бот отвечает пустым списком inline-результатов и пишет подробности только в лог. Логи выводятся в stdout; уровень задаётся через `LOG_LEVEL=INFO` или `DEBUG`.
