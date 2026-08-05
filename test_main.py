@@ -24,11 +24,6 @@ class MainTests(unittest.TestCase):
             main.tiktok_photo_url("https://www.tiktok.com/@user/video/123")
         )
 
-    def test_pending_result(self):
-        result = main.pending_result("task-123", "placeholder-file-id")
-        self.assertEqual(result.id, "task-123")
-        self.assertEqual(result.video_file_id, "placeholder-file-id")
-
     def test_slideshow_frame_rate(self):
         self.assertAlmostEqual(main.slideshow_frame_rate(8, 12), 2 / 3)
         with self.assertRaises(ValueError):

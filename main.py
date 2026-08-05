@@ -18,11 +18,9 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
-    ChosenInlineResult,
     FSInputFile,
     InlineQuery,
     InlineQueryResultCachedVideo,
-    InputMediaVideo,
     Update,
 )
 from aiohttp import web
@@ -363,12 +361,8 @@ class VideoService:
         self.cache = cache
         self.proxy = proxy
         self.cache_chat_id = cache_chat_id
+        self.inline_timeout = min(int(setting("INLINE_TIMEOUT", "9")), 9)
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
-        self.placeholder_file_id = setting("INLINE_PLACEHOLDER_VIDEO_ID")
-        self.inline_urls = TTLCache(
-            maxsize=int(setting("INLINE_TASK_MAXSIZE", "10000")),
-            ttl=int(setting("INLINE_TASK_TTL", str(24 * 60 * 60))),
-        )
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight = {}
         self.rate_limit = TTLCache(
@@ -386,40 +380,14 @@ class VideoService:
             self.rate_limit[user_id] = count + 1
             return True
 
-    def start(self, url):
+    async def result_for(self, url):
         request_key = normalized_url(url)
         task = self.inflight.get(request_key)
         if task is None:
             task = asyncio.create_task(self._resolve(url))
             self.inflight[request_key] = task
             task.add_done_callback(lambda _: self.inflight.pop(request_key, None))
-        return task
-
-    async def result_for(self, url):
-        return await asyncio.shield(self.start(url))
-
-    def inline_task_id(self, url):
-        task_id = hashlib.sha256(normalized_url(url).encode()).hexdigest()[:32]
-        self.inline_urls[task_id] = url
-        return task_id
-
-    def inline_url(self, task_id):
-        return self.inline_urls.get(task_id)
-
-    async def cached_result_for(self, url):
-        alias = f"alias:{normalized_url(url)}"
-        key = await self.cache.get(alias)
-        if not key:
-            return None
-        record, source = await self.cache.get_with_source(key)
-        if record is None:
-            await self.cache.delete(alias)
-            return None
-        record = await self.valid_cached_record(key, record, source)
-        if record is None:
-            await self.cache.delete(alias)
-            return None
-        return key, record
+        return await asyncio.shield(task)
 
     async def valid_cached_record(self, key, record, source):
         if record.get("type") == "photo":
@@ -550,24 +518,12 @@ def cached_result(key, record):
     )
 
 
-def pending_result(task_id, file_id):
-    return InlineQueryResultCachedVideo(
-        id=task_id,
-        video_file_id=file_id,
-        title="⏳ Видео обрабатывается",
-        description="Нажмите, чтобы отправить видео в чат",
-        video_width=640,
-        video_height=1280,
-        video_duration=1,
-    )
-
-
 def report_background_failure(task):
     if task.cancelled():
         return
     error = task.exception()
     if error:
-        logger.error("Background video job failed: %s", error)
+        logger.error("Timed-out video job failed: %s", error)
 
 
 @router.inline_query()
@@ -581,24 +537,23 @@ async def inline_query(query: InlineQuery, service: VideoService):
         logger.warning("Rate limit exceeded for user %s", query.from_user.id)
         results = []
     else:
-        task = service.start(url)
-        task.add_done_callback(report_background_failure)
-        task_id = service.inline_task_id(url)
+        task = asyncio.create_task(service.result_for(url))
         try:
-            cached = await asyncio.wait_for(
-                service.cached_result_for(url),
-                timeout=1,
+            key, record = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=service.inline_timeout,
             )
-        except Exception as error:
-            logger.warning("Failed to check inline cache for %s: %s", task_id, error)
-            cached = None
-        if cached is not None:
-            key, record = cached
             results = [cached_result(key, record)]
-        elif service.placeholder_file_id:
-            results = [pending_result(task_id, service.placeholder_file_id)]
-        else:
-            logger.error("INLINE_PLACEHOLDER_VIDEO_ID is not configured")
+        except TimeoutError:
+            task.add_done_callback(report_background_failure)
+            logger.warning(
+                "Inline query %s timed out after %ss",
+                query.id,
+                service.inline_timeout,
+            )
+            results = []
+        except Exception as error:
+            logger.error("Failed to prepare inline query %s: %s", query.id, error)
             results = []
 
     try:
@@ -608,48 +563,6 @@ async def inline_query(query: InlineQuery, service: VideoService):
         )
     except Exception as error:
         logger.error("Failed to answer inline query %s: %s", query.id, error)
-
-
-async def update_inline_message(chosen: ChosenInlineResult, service: VideoService, url):
-    try:
-        _, record = await service.result_for(url)
-        await service.bot.edit_message_media(
-            inline_message_id=chosen.inline_message_id,
-            media=InputMediaVideo(
-                media=record["file_id"],
-                caption="Готово!",
-                width=record.get("video_width"),
-                height=record.get("video_height"),
-                duration=record.get("video_duration"),
-                supports_streaming=True,
-            ),
-        )
-        logger.info("Updated inline message for task %s", chosen.result_id)
-    except Exception as error:
-        logger.error("Failed to update inline message %s: %s", chosen.result_id, error)
-        try:
-            await service.bot.edit_message_caption(
-                inline_message_id=chosen.inline_message_id,
-                caption="❌ Не удалось обработать видео. Попробуйте ещё раз.",
-            )
-        except Exception as fallback_error:
-            logger.error(
-                "Failed to update inline error %s: %s", chosen.result_id, fallback_error
-            )
-
-
-@router.chosen_inline_result()
-async def chosen_inline_result(chosen: ChosenInlineResult, service: VideoService):
-    if not chosen.inline_message_id:
-        logger.warning(
-            "Chosen inline result %s has no inline_message_id", chosen.result_id
-        )
-        return
-    url = service.inline_url(chosen.result_id) or media_url(chosen.query)
-    if not url:
-        logger.error("Cannot resolve URL for chosen inline result %s", chosen.result_id)
-        return
-    asyncio.create_task(update_inline_message(chosen, service, url))
 
 
 def make_dispatcher(service):
@@ -683,7 +596,7 @@ async def start_webhook(app):
     await bot.set_webhook(
         f"{base_url}{path}",
         secret_token=required("TELEGRAM_WEBHOOK_SECRET"),
-        allowed_updates=["inline_query", "chosen_inline_result"],
+        allowed_updates=["inline_query"],
     )
     logger.info("Webhook configured at %s%s", base_url, path)
 
@@ -712,9 +625,7 @@ def create_app(bot, dispatcher, cache, service):
 
 async def run_polling(bot, dispatcher, cache, service):
     try:
-        await dispatcher.start_polling(
-            bot, allowed_updates=["inline_query", "chosen_inline_result"]
-        )
+        await dispatcher.start_polling(bot, allowed_updates=["inline_query"])
     finally:
         await service.close()
         await cache.close()
