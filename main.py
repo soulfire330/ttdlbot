@@ -247,19 +247,21 @@ def download_slideshow(info, images, proxy, directory):
                 "-map",
                 "1:a:0",
                 "-vf",
-                "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "scale=640:1280:force_original_aspect_ratio=decrease,pad=640:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
                 "-r",
-                "30",
+                "10",
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                "ultrafast",
                 "-tune",
                 "stillimage",
+                "-crf",
+                "30",
+                "-threads",
+                "0",
                 "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
+                "copy",
                 "-shortest",
                 str(output_path),
             ],
@@ -278,7 +280,7 @@ def download_slideshow(info, images, proxy, directory):
         time.perf_counter() - stage_started,
         output_path.stat().st_size,
     )
-    info = {**info, "ext": "mp4", "width": 720, "height": 1280}
+    info = {**info, "ext": "mp4", "width": 640, "height": 1280}
     validate_video(info, output_path)
     return info, output_path
 
