@@ -24,7 +24,7 @@ TikTok → yt-dlp + proxy → /tmp → закрытый Telegram-канал
 1. В `@BotFather` включите inline mode через `/setinline`.
 2. В `@BotFather` включите Inline Feedback и поставьте `100%` — это нужно для `chosen_inline_result`.
 3. Создайте закрытый канал и добавьте бота администратором с правом публикации.
-4. Загрузите в этот канал фото-заглушку и укажите его Telegram `file_id` в `INLINE_PLACEHOLDER_PHOTO_ID`.
+4. Загрузите в этот канал короткое видео-заглушку и укажите его Telegram `file_id` в `INLINE_PLACEHOLDER_VIDEO_ID`.
 5. Создайте `.env`:
 
 ```env
@@ -32,7 +32,7 @@ TELEGRAM_BOT_TOKEN=токен_от_BotFather
 YTDLP_PROXY=http://proxy.example:8080
 TELEGRAM_PROXY=http://proxy.example:8080
 TELEGRAM_CACHE_CHAT_ID=-1001234567890
-INLINE_PLACEHOLDER_PHOTO_ID=сюда_file_id_фото_заглушки
+INLINE_PLACEHOLDER_VIDEO_ID=сюда_file_id_короткой_заглушки
 BOT_MODE=polling
 ```
 
@@ -44,7 +44,7 @@ TELEGRAM_CACHE_CHAT_ID=@my_cache_channel
 
 Proxy для `yt-dlp` и Telegram API опционален. Если `TELEGRAM_PROXY` не указан, для Bot API используется `YTDLP_PROXY`; если оба пустые, запросы идут напрямую.
 
-По умолчанию одновременно обрабатываются 2 загрузки, максимальный размер видео — 50 MB, длительность — 600 секунд, лимит пользователя — 10 запросов в минуту. При промахе кэша inline-режим сразу возвращает фото-заглушку: после клика она автоматически заменяется готовым роликом. Эти значения настраиваются через `MAX_CONCURRENT_JOBS`, `MAX_FILE_SIZE`, `MAX_DURATION`, `RATE_LIMIT_COUNT` и `RATE_LIMIT_WINDOW`.
+По умолчанию одновременно обрабатываются 2 загрузки, максимальный размер видео — 50 MB, длительность — 600 секунд, лимит пользователя — 10 запросов в минуту. При промахе кэша inline-режим сразу возвращает видео-заглушку: после клика она автоматически заменяется готовым роликом. Эти значения настраиваются через `MAX_CONCURRENT_JOBS`, `MAX_FILE_SIZE`, `MAX_DURATION`, `RATE_LIMIT_COUNT` и `RATE_LIMIT_WINDOW`.
 
 ## Запуск
 

@@ -21,7 +21,6 @@ from aiogram.types import (
     ChosenInlineResult,
     FSInputFile,
     InlineQuery,
-    InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InputMediaVideo,
     Update,
@@ -365,11 +364,7 @@ class VideoService:
         self.proxy = proxy
         self.cache_chat_id = cache_chat_id
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
-        self.placeholder_file_id = setting("INLINE_PLACEHOLDER_PHOTO_ID")
-        self.placeholder_type = "photo"
-        if not self.placeholder_file_id:
-            self.placeholder_file_id = setting("INLINE_PLACEHOLDER_VIDEO_ID")
-            self.placeholder_type = "video"
+        self.placeholder_file_id = setting("INLINE_PLACEHOLDER_VIDEO_ID")
         self.inline_urls = TTLCache(
             maxsize=int(setting("INLINE_TASK_MAXSIZE", "10000")),
             ttl=int(setting("INLINE_TASK_TTL", str(24 * 60 * 60))),
@@ -555,22 +550,15 @@ def cached_result(key, record):
     )
 
 
-def pending_result(task_id, file_id, media_type="photo"):
-    if media_type == "video":
-        return InlineQueryResultCachedVideo(
-            id=task_id,
-            video_file_id=file_id,
-            title="⏳ Видео обрабатывается",
-            description="Нажмите, чтобы отправить видео в чат",
-            video_width=640,
-            video_height=1280,
-            video_duration=1,
-        )
-    return InlineQueryResultCachedPhoto(
+def pending_result(task_id, file_id):
+    return InlineQueryResultCachedVideo(
         id=task_id,
-        photo_file_id=file_id,
+        video_file_id=file_id,
         title="⏳ Видео обрабатывается",
         description="Нажмите, чтобы отправить видео в чат",
+        video_width=640,
+        video_height=1280,
+        video_duration=1,
     )
 
 
@@ -608,15 +596,9 @@ async def inline_query(query: InlineQuery, service: VideoService):
             key, record = cached
             results = [cached_result(key, record)]
         elif service.placeholder_file_id:
-            results = [
-                pending_result(
-                    task_id,
-                    service.placeholder_file_id,
-                    service.placeholder_type,
-                )
-            ]
+            results = [pending_result(task_id, service.placeholder_file_id)]
         else:
-            logger.error("Inline placeholder file ID is not configured")
+            logger.error("INLINE_PLACEHOLDER_VIDEO_ID is not configured")
             results = []
 
     try:
