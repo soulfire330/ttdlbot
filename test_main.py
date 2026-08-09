@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,6 +121,57 @@ class MainTests(unittest.TestCase):
                         os.environ["DISK_CACHE_DIR"] = old_dir
 
         asyncio.run(check())
+
+    def test_has_audio_stream_and_mux(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            silent = directory / "silent.mp4"
+            audio = directory / "audio.m4a"
+            merged = directory / "merged.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=64x64:d=1",
+                    "-c:v",
+                    "libx264",
+                    str(silent),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-c:a",
+                    "aac",
+                    str(audio),
+                ],
+                check=True,
+            )
+            self.assertFalse(main.has_audio_stream(silent))
+            self.assertTrue(main.has_audio_stream(audio))
+            main.mux_audio(silent, audio, merged)
+            self.assertTrue(main.has_audio_stream(merged))
+
+    def test_video_record_uses_uploaded_video_dims(self):
+        video = SimpleNamespace(file_id="abc", width=1080, height=1920, duration=30)
+        record = main.video_record({"title": "t", "uploader": "u"}, video)
+        self.assertEqual(record["file_id"], "abc")
+        self.assertEqual(record["video_width"], 1080)
+        self.assertEqual(record["video_height"], 1920)
+        self.assertEqual(record["video_duration"], 30)
 
     def test_rate_limit(self):
         async def check():

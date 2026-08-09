@@ -281,6 +281,102 @@ def download_slideshow(info, images, proxy, directory):
     return info, output_path
 
 
+def has_audio_stream(path):
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def tiktok_music_url(url, proxy):
+    with yt_dlp.YoutubeDL(extractor_options(proxy)) as ydl:
+        response = ydl.urlopen(url)
+        try:
+            full_url = response.url
+        finally:
+            response.close()
+        video_id = urlparse(full_url).path.rstrip("/").rsplit("/", 1)[-1]
+        extractor = ydl.get_info_extractor("TikTok")
+        raw_info, status = extractor._extract_web_data_and_status(full_url, video_id)
+        if status or not raw_info:
+            return None
+        music = raw_info.get("music") or {}
+        play_url = music.get("playUrl")
+        if isinstance(play_url, str):
+            return play_url
+        urls = (play_url or {}).get("urlList") or []
+        return urls[0] if urls else None
+
+
+def mux_audio(video_path, audio_path, output_path):
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video_path),
+                "-i",
+                str(audio_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("ffmpeg не установлен") from error
+    if result.returncode or not output_path.is_file():
+        error = result.stderr.strip()[-500:]
+        raise ValueError(f"ffmpeg не собрал видео со звуком: {error}")
+    return output_path
+
+
+def restore_audio(video_path, url, proxy, directory, info):
+    """Webapp formats sometimes claim acodec but ship video-only; mux the music track."""  # noqa: E501
+    try:
+        music_url = tiktok_music_url(url, proxy)
+        if not music_url:
+            logger.warning(
+                "No music track for audio-less TikTok video %s", info.get("id")
+            )
+            return video_path
+        audio_path = download_file(music_url, proxy, Path(directory) / "music.m4a")
+        output_path = mux_audio(video_path, audio_path, Path(directory) / "merged.mp4")
+        validate_video(info, output_path)
+        logger.info("Restored audio for TikTok video %s", info.get("id"))
+        return output_path
+    except Exception as error:
+        # ponytail: best-effort — deliver the silent video instead of failing the request  # noqa: E501
+        logger.warning("Failed to restore audio for %s: %s", info.get("id"), error)
+        return video_path
+
+
 def download_video(url, proxy, directory):
     with yt_dlp.YoutubeDL(extractor_options(proxy, directory)) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -289,6 +385,8 @@ def download_video(url, proxy, directory):
     if info.get("ext") != "mp4" or not path.is_file():
         raise ValueError("yt-dlp не скачал доступный mp4")
     validate_video(info, path)
+    if source_name(url) == "tiktok" and not has_audio_stream(path):
+        path = restore_audio(path, url, proxy, directory, info)
     return info, path
 
 
@@ -297,16 +395,16 @@ def video_key(info, url):
     return f"{source_name(url)}:{key}"
 
 
-def video_record(info, file_id):
+def video_record(info, video):
     return {
-        "file_id": file_id,
+        "file_id": video.file_id,
         "title": (info.get("title") or "TikTok video")[:256],
         "description": (f"@{info['uploader']}" if info.get("uploader") else "TikTok")[
             :255
         ],
-        "video_width": info.get("width"),
-        "video_height": info.get("height"),
-        "video_duration": int(info["duration"]) if info.get("duration") else None,
+        "video_width": video.width,
+        "video_height": video.height,
+        "video_duration": video.duration,
     }
 
 
@@ -492,7 +590,7 @@ class VideoService:
                     supports_streaming=True,
                     request_timeout=self.telegram_timeout,
                 )
-                record = video_record(info, message.video.file_id)
+                record = video_record(info, message.video)
                 logger.info(
                     "Uploaded Telegram video %s in %.2fs",
                     key,
