@@ -4,7 +4,7 @@ RUN apk add --no-cache build-base libffi-dev linux-headers \
     && pip install --no-cache-dir uv==0.11.17
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --locked --no-dev
 
