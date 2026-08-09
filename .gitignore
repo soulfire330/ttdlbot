@@ -15,3 +15,7 @@ data/cache/
 
 # Local secrets
 .env
+
+# Coverage artifacts
+.coverage
+htmlcov/

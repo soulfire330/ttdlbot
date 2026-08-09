@@ -73,9 +73,11 @@ uv run main.py
 Проверки кода:
 
 ```bash
+uv sync --extra dev
 uv run ruff format --check main.py test_main.py
 uv run ruff check main.py test_main.py
-uv run python -m unittest -v test_main.py
+uv run pytest -q
+uv run coverage run --source=main -m pytest -q && uv run coverage report -m
 ```
 
 Production запускается через polling.

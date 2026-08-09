@@ -10,7 +10,14 @@ dependencies = [
     "cachetools>=7.1.7",
     "diskcache>=5.6.3",
     "python-dotenv>=1.2.2",
-    "yt-dlp>=2026.7.4",
+    "yt-dlp==2026.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage>=7.0.0",
+    "pytest>=8.0.0",
+    "ruff>=0.16.1",
 ]
 
 [tool.ruff]
@@ -20,7 +27,3 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
-[dependency-groups]
-dev = [
-    "ruff>=0.16.1",
-]
