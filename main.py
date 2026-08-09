@@ -21,6 +21,7 @@ from aiogram.types import (
     FSInputFile,
     InlineQuery,
     InlineQueryResultCachedVideo,
+    InputMediaVideo,
     Message,
 )
 from cachetools import TTLCache
@@ -700,19 +701,31 @@ async def private_start(
             "Ссылка устарела. Отправьте её через inline-режим ещё раз."
         )
         return
+    placeholder = await message.answer("⏳ Загрузка...")
     try:
         _, record = await service.result_for(url)
+    except Exception as error:
+        logger.error(
+            "Failed to process private video for task %s: %s", command.args, error
+        )
+        await placeholder.edit_text(
+            "❌ Не удалось обработать видео. Попробуйте ещё раз."
+        )
+        return
+    try:
+        await service.bot.edit_message_media(
+            chat_id=message.chat.id,
+            message_id=placeholder.message_id,
+            media=InputMediaVideo(media=record["file_id"]),
+        )
+    except Exception as error:
+        logger.error("Failed to edit placeholder for task %s: %s", command.args, error)
         await service.bot.send_video(
             chat_id=message.chat.id,
             video=record["file_id"],
-            caption="Готово!",
         )
-        logger.info("Sent task %s to private chat %s", command.args, message.chat.id)
-    except Exception as error:
-        logger.error(
-            "Failed to send private video for task %s: %s", command.args, error
-        )
-        await message.answer("❌ Не удалось обработать видео. Попробуйте ещё раз.")
+        await placeholder.delete()
+    logger.info("Sent task %s to private chat %s", command.args, message.chat.id)
 
 
 def make_dispatcher(service):
