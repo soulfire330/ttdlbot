@@ -27,9 +27,39 @@ dev = [
 [tool.ruff]
 target-version = "py313"
 line-length = 88
+src = ["src", "."]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = [
+    "E",    # pycodestyle (ошибки)
+    "W",    # pycodestyle (предупреждения)
+    "F",    # Pyflakes (ошибки синтаксиса и неиспользуемые переменные)
+    "I",    # isort (автоматическая сортировка импортов)
+    "B",    # flake8-bugbear (поиск скрытых багов и антипаттернов)
+    "UP",   # pyupgrade (авто-обновление синтаксиса под Python 3.13)
+    "SIM",  # flake8-simplify (упрощение сложных if/else и условий)
+    "N",    # pep8-naming (проверка именования классов, функций и переменных)
+    "PTH",  # flake8-use-pathlib (замена os.path на современный pathlib)
+    "PERF", # Perflint (предупреждения о неэффективном коде)
+    "RUF", # Внутренние полезные правила самого Ruff
+]
+
+ignore = [
+    "E501", # Длину строки лучше доверить форматировщику ruff format
+    "RUF001", # Ложные срабатывания на русские строки интерфейса
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["SIM117"] # Вложенные with с моками читаются лучше плоских списков контекстов
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ttblow"]

@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
 
-from ttblow import config
-from ttblow import main as entry
+from ttblow import config, main as entry
 from ttblow.bot import handlers
 from ttblow.downloader import extractor, media, slideshow
 from ttblow.services import cache, video_service
@@ -238,9 +237,8 @@ class MainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "big.mp4"
             path.write_bytes(b"x" * 101)
-            with env("MAX_FILE_SIZE", "100"):
-                with self.assertRaises(ValueError):
-                    media.validate_video({}, path)
+            with env("MAX_FILE_SIZE", "100"), self.assertRaises(ValueError):
+                media.validate_video({}, path)
 
     def test_download_file_enforces_size_limit(self):
         class FakeResponse:
@@ -507,45 +505,53 @@ class MainTests(unittest.TestCase):
         self.assertEqual(info["image_urls"][0]["url"], "https://img/1.jpg")
         self.assertEqual(len(info["image_urls"]), 2)
 
-        with mock.patch.object(
-            extractor, "tiktok_aweme_data", return_value=(stub_extractor, None, 404)
+        with (
+            mock.patch.object(
+                extractor, "tiktok_aweme_data", return_value=(stub_extractor, None, 404)
+            ),
+            self.assertRaises(ValueError),
         ):
-            with self.assertRaises(ValueError):
-                extractor.tiktok_photo_info("https://www.tiktok.com/@u/photo/123", None)
-        with mock.patch.object(
-            extractor,
-            "tiktok_aweme_data",
-            return_value=(stub_extractor, {"imagePost": {"images": []}}, 0),
+            extractor.tiktok_photo_info("https://www.tiktok.com/@u/photo/123", None)
+        with (
+            mock.patch.object(
+                extractor,
+                "tiktok_aweme_data",
+                return_value=(stub_extractor, {"imagePost": {"images": []}}, 0),
+            ),
+            self.assertRaises(ValueError),
         ):
-            with self.assertRaises(ValueError):
-                extractor.tiktok_photo_info("https://www.tiktok.com/@u/photo/123", None)
+            extractor.tiktok_photo_info("https://www.tiktok.com/@u/photo/123", None)
 
     def test_extract_metadata_photo_path(self):
-        with mock.patch.object(
-            extractor,
-            "tiktok_photo_url",
-            return_value="https://www.tiktok.com/@u/photo/123",
-        ):
-            with mock.patch.object(
+        with (
+            mock.patch.object(
+                extractor,
+                "tiktok_photo_url",
+                return_value="https://www.tiktok.com/@u/photo/123",
+            ),
+            mock.patch.object(
                 extractor, "tiktok_photo_info", return_value={"id": "123"}
-            ) as photo_info:
-                info = extractor.extract_metadata(
-                    "https://www.tiktok.com/@u/photo/123", None
-                )
+            ) as photo_info,
+        ):
+            info = extractor.extract_metadata(
+                "https://www.tiktok.com/@u/photo/123", None
+            )
         self.assertEqual(info, {"id": "123"})
         photo_info.assert_called_once_with("https://www.tiktok.com/@u/photo/123", None)
 
     def test_extract_metadata_resolves_short_link(self):
-        with mock.patch.object(
-            extractor,
-            "tiktok_photo_url",
-            side_effect=[None, "https://www.tiktok.com/@u/photo/123"],
-        ):
-            with mock.patch.object(
+        with (
+            mock.patch.object(
+                extractor,
+                "tiktok_photo_url",
+                side_effect=[None, "https://www.tiktok.com/@u/photo/123"],
+            ),
+            mock.patch.object(
                 extractor, "resolve_url", return_value="https://vm.tiktok.com/abc"
-            ) as resolve:
-                with mock.patch.object(extractor, "tiktok_photo_info", return_value={}):
-                    extractor.extract_metadata("https://vm.tiktok.com/abc", None)
+            ) as resolve,
+        ):
+            with mock.patch.object(extractor, "tiktok_photo_info", return_value={}):
+                extractor.extract_metadata("https://vm.tiktok.com/abc", None)
         resolve.assert_called_once()
 
     def test_extract_metadata_video_path(self):
@@ -560,15 +566,17 @@ class MainTests(unittest.TestCase):
 
     def test_tiktok_music_url_variants(self):
         def music_url(raw, status):
-            with mock.patch.object(
-                media,
-                "resolve_url",
-                return_value="https://www.tiktok.com/@u/video/123",
-            ):
-                with mock.patch.object(
+            with (
+                mock.patch.object(
+                    media,
+                    "resolve_url",
+                    return_value="https://www.tiktok.com/@u/video/123",
+                ),
+                mock.patch.object(
                     media, "tiktok_aweme_data", return_value=(None, raw, status)
-                ):
-                    return media.tiktok_music_url("https://vm.tiktok.com/abc", None)
+                ),
+            ):
+                return media.tiktok_music_url("https://vm.tiktok.com/abc", None)
 
         self.assertEqual(
             music_url({"music": {"playUrl": "https://sf/a.mp3"}}, 0),
@@ -695,16 +703,18 @@ class MainTests(unittest.TestCase):
                     )
                     url = "https://www.tiktok.com/@u/video/123"
                     metadata = {"id": "123", "title": "t", "media_type": "video"}
-                    with mock.patch.object(
-                        video_service, "extract_metadata", return_value=metadata
-                    ) as extract_metadata:
-                        with mock.patch.object(
+                    with (
+                        mock.patch.object(
+                            video_service, "extract_metadata", return_value=metadata
+                        ) as extract_metadata,
+                        mock.patch.object(
                             video_service,
                             "download_video",
                             return_value=(metadata, Path("/tmp/x.mp4")),
-                        ):
-                            key, record = await service._resolve(url)
-                            await service._resolve(url)
+                        ),
+                    ):
+                        key, record = await service._resolve(url)
+                        await service._resolve(url)
                     self.assertEqual(key, "tiktok:123")
                     self.assertEqual(record["file_id"], "abc")
                     self.assertEqual(extract_metadata.call_count, 1)
@@ -736,22 +746,24 @@ class MainTests(unittest.TestCase):
                         "media_type": "photo",
                         "image_urls": [{"url": "u1"}, {"url": "u2"}],
                     }
-                    with mock.patch.object(
-                        video_service, "extract_metadata", return_value=metadata
-                    ):
-                        with mock.patch.object(
+                    with (
+                        mock.patch.object(
+                            video_service, "extract_metadata", return_value=metadata
+                        ),
+                        mock.patch.object(
                             video_service,
                             "download_images",
                             return_value=[Path("1.jpg"), Path("2.jpg")],
-                        ) as download_images:
-                            with mock.patch.object(
-                                video_service,
-                                "download_slideshow",
-                                return_value=(metadata, Path("/tmp/s.mp4")),
-                            ):
-                                key, record = await service._resolve(
-                                    "https://www.tiktok.com/@u/photo/456"
-                                )
+                        ) as download_images,
+                        mock.patch.object(
+                            video_service,
+                            "download_slideshow",
+                            return_value=(metadata, Path("/tmp/s.mp4")),
+                        ),
+                    ):
+                        key, record = await service._resolve(
+                            "https://www.tiktok.com/@u/photo/456"
+                        )
                     self.assertEqual(key, "tiktok:456")
                     self.assertEqual(record["file_id"], "abc")
                     download_images.assert_called_once()
@@ -1065,15 +1077,19 @@ class MainTests(unittest.TestCase):
                     url = "https://www.tiktok.com/@u/video/123"
                     await service.cache.set("tiktok:old", {"type": "photo"})
                     await service.cache.set("alias:" + url, "tiktok:old")
-                    with mock.patch.object(
-                        video_service, "extract_metadata", return_value={"id": "123"}
-                    ):
-                        with mock.patch.object(
+                    with (
+                        mock.patch.object(
+                            video_service,
+                            "extract_metadata",
+                            return_value={"id": "123"},
+                        ),
+                        mock.patch.object(
                             video_service,
                             "download_video",
                             return_value=({"id": "123"}, Path("/tmp/x.mp4")),
-                        ):
-                            key, _ = await service._resolve(url)
+                        ),
+                    ):
+                        key, _ = await service._resolve(url)
                     self.assertEqual(key, "tiktok:123")
                     self.assertEqual(
                         await service.cache.get("alias:" + url), "tiktok:123"
