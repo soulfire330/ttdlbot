@@ -1,0 +1,130 @@
+"""Бот-интерфейс: inline-запросы и команда /start."""
+
+import asyncio
+import logging
+from typing import Any
+
+from aiogram import Router
+from aiogram.filters import CommandObject, CommandStart
+from aiogram.types import (
+    InlineQuery,
+    InlineQueryResultCachedVideo,
+    InputMediaVideo,
+    Message,
+)
+
+from ttblow.services.video_service import VideoService
+from ttblow.utils.urls import media_url
+
+logger = logging.getLogger(__name__)
+
+router = Router()
+
+
+def cached_result(key: str, record: dict[str, Any]) -> InlineQueryResultCachedVideo:
+    return InlineQueryResultCachedVideo(
+        id=f"video:{key}",
+        video_file_id=record["file_id"],
+        title=record["title"],
+        description=record["description"],
+        video_width=record.get("video_width"),
+        video_height=record.get("video_height"),
+        video_duration=record.get("video_duration"),
+    )
+
+
+def report_background_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error:
+        logger.error("Timed-out video job failed: %s", error)
+
+
+@router.inline_query()
+async def inline_query(query: InlineQuery, service: VideoService) -> None:
+    text = query.query or ""
+    logger.info("Inline query %s received (%d chars)", query.id, len(text))
+    url = media_url(text)
+    switch_pm_text = None
+    switch_pm_parameter = None
+    if not url:
+        results = []
+    elif not await service.allow_user(query.from_user.id):
+        logger.warning("Rate limit exceeded for user %s", query.from_user.id)
+        results = []
+    else:
+        task = asyncio.create_task(service.result_for(url))
+        try:
+            key, record = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=service.inline_timeout,
+            )
+            results = [cached_result(key, record)]
+        except TimeoutError:
+            task.add_done_callback(report_background_failure)
+            switch_pm_text = "⏳ Видео долго обрабатывается. Отправить в ЛС."
+            switch_pm_parameter = service.register_pm_task(url, query.from_user.id)
+            logger.warning(
+                "Inline query %s timed out after %ss; task %s moved to PM",
+                query.id,
+                service.inline_timeout,
+                switch_pm_parameter,
+            )
+            results = []
+        except Exception as error:
+            logger.error("Failed to prepare inline query %s: %s", query.id, error)
+            results = []
+
+    try:
+        await query.answer(
+            results,
+            cache_time=0,
+            is_personal=True,
+            switch_pm_text=switch_pm_text,
+            switch_pm_parameter=switch_pm_parameter,
+        )
+        logger.info(
+            "Answered inline query %s with %d result(s)", query.id, len(results)
+        )
+    except Exception as error:
+        logger.error("Failed to answer inline query %s: %s", query.id, error)
+
+
+@router.message(CommandStart())
+async def private_start(
+    message: Message, command: CommandObject, service: VideoService
+) -> None:
+    if message.chat.type != "private":
+        return
+    url = service.claim_pm_url(command.args or "", message.from_user.id)
+    if not url:
+        await message.answer(
+            "Ссылка устарела. Отправьте её через inline-режим ещё раз."
+        )
+        return
+    placeholder = await message.answer("⏳ Загрузка...")
+    try:
+        _, record = await service.result_for(url)
+    except Exception as error:
+        logger.error(
+            "Failed to process private video for task %s: %s", command.args, error
+        )
+        await placeholder.edit_text(
+            "❌ Не удалось обработать видео. Попробуйте ещё раз."
+        )
+        return
+    try:
+        await service.bot.edit_message_media(
+            chat_id=message.chat.id,
+            message_id=placeholder.message_id,
+            media=InputMediaVideo(media=record["file_id"]),
+        )
+    except Exception as error:
+        logger.error("Failed to edit placeholder for task %s: %s", command.args, error)
+        await service.bot.send_video(
+            chat_id=message.chat.id,
+            video=record["file_id"],
+        )
+        await placeholder.delete()
+    logger.info("Sent task %s to private chat %s", command.args, message.chat.id)

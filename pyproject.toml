@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "ttblow"
 version = "0.1.0"
@@ -26,4 +30,7 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ttblow"]
 

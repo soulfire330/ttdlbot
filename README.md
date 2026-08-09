@@ -67,17 +67,17 @@ docker logs -f ttblow
 Для ручного запуска без Docker нужен установленный `ffmpeg` в `PATH`:
 
 ```bash
-uv run main.py
+uv run python -m ttblow.main
 ```
 
 Проверки кода:
 
 ```bash
 uv sync --extra dev
-uv run ruff format --check main.py test_main.py
-uv run ruff check main.py test_main.py
+uv run ruff format --check src tests
+uv run ruff check src tests
 uv run pytest -q
-uv run coverage run --source=main -m pytest -q && uv run coverage report -m
+uv run coverage run --source=ttblow -m pytest -q && uv run coverage report -m
 ```
 
 Production запускается через polling.

@@ -5,8 +5,8 @@ RUN apk add --no-cache build-base libffi-dev linux-headers \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
-COPY main.py ./
+COPY src ./src
+RUN uv sync --locked --no-dev
 
 FROM python:3.13-alpine
 
@@ -18,7 +18,7 @@ RUN apk add --no-cache ffmpeg libffi libstdc++ \
 
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
-COPY --chown=app:app main.py ./
+COPY --from=builder --chown=app:app /app/src /app/src
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -26,4 +26,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
     DISK_CACHE_DIR=/data/cache
 
 USER app
-CMD ["python", "main.py"]
+CMD ["python", "-m", "ttblow.main"]
