@@ -14,6 +14,7 @@ from ttblow.config import (
     setting,
 )
 from ttblow.downloader.extractor import (
+    download_tiktok_mix,
     extractor_options,
     resolve_url,
     tiktok_aweme_data,
@@ -74,16 +75,30 @@ def tiktok_music_url(url: str, proxy: str | None) -> str | None:
     return urls[0] if urls else None
 
 
+def _mix_audio_path(job: Job) -> Path | None:
+    """Полный микс (речь + добавленный звук) из watermarked-файла."""
+    audio_path = download_tiktok_mix(job.url, job.proxy, job.directory / "mix.mp4")
+    return audio_path if audio_path and has_audio_stream(audio_path) else None
+
+
+def _music_audio_path(job: Job) -> Path | None:
+    music_url = tiktok_music_url(job.url, job.proxy)
+    if not music_url:
+        return None
+    return download_file(music_url, job.proxy, job.directory / "music.m4a")
+
+
 def restore_audio(video_path: Path, job: Job, info: dict[str, Any]) -> Path:
-    """Webapp formats claim acodec but ship video-only; mux the music track."""
+    """Webapp formats claim acodec but ship video-only; mux the mixed audio."""
     try:
-        music_url = tiktok_music_url(job.url, job.proxy)
-        if not music_url:
+        audio_path = _mix_audio_path(job)
+        if audio_path is None:
+            audio_path = _music_audio_path(job)
+        if audio_path is None:
             logger.warning(
-                "No music track for audio-less TikTok video %s", info.get("id")
+                "No audio track for audio-less TikTok video %s", info.get("id")
             )
             return video_path
-        audio_path = download_file(music_url, job.proxy, job.directory / "music.m4a")
         output_path = mux_audio(video_path, audio_path, job.directory / "merged.mp4")
         validate_video(info, output_path)
         logger.info("Restored audio for TikTok video %s", info.get("id"))

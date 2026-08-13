@@ -654,6 +654,52 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(music_url({"music": {}}, 0))
         self.assertIsNone(music_url({}, 500))
 
+    def test_download_tiktok_mix(self):
+        class FakeResponse:
+            def __init__(self, data):
+                self.data = data
+
+            def read(self, size):
+                chunk, self.data = self.data[:size], self.data[size:]
+                return chunk
+
+            def close(self):
+                pass
+
+        def fetch(status, raw, formats, data=b"mix"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "mix.mp4"
+                ie = SimpleNamespace(
+                    _extract_web_data_and_status=lambda *a: (raw, status),
+                    _parse_aweme_video_web=lambda *a: {
+                        "formats": formats,
+                        "http_headers": {
+                            "Referer": "https://www.tiktok.com/@u/video/123"
+                        },
+                    },
+                )
+                with mock.patch.object(extractor.yt_dlp, "YoutubeDL") as youtube_dl:
+                    ydl = youtube_dl.return_value.__enter__.return_value
+                    ydl.get_info_extractor.return_value = ie
+                    ydl.urlopen.return_value = FakeResponse(data)
+                    got = extractor.download_tiktok_mix(
+                        "https://www.tiktok.com/@u/video/123", None, path
+                    )
+                    if got is not None:
+                        got = (got.read_bytes(), ydl.urlopen.call_args.args[0].headers)
+                return got
+
+        self.assertEqual(
+            fetch(
+                0,
+                {"video": {}},
+                [{"format_id": "download", "url": "https://sf/mix.mp4"}],
+            ),
+            (b"mix", {"Referer": "https://www.tiktok.com/@u/video/123"}),
+        )
+        self.assertIsNone(fetch(0, {"video": {}}, [{"format_id": "play"}]))
+        self.assertIsNone(fetch(500, {}, []))
+
     def test_restore_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
@@ -664,23 +710,57 @@ class MainTests(unittest.TestCase):
             merged = directory / "merged.mp4"
             merged.write_bytes(b"y")
 
-            with mock.patch.object(media, "tiktok_music_url", return_value=None):
-                self.assertIs(media.restore_audio(video, job, info), video)
-
-            with mock.patch.object(
-                media, "tiktok_music_url", return_value="https://sf/a.m4a"
-            ):
-                with mock.patch.object(media, "download_file") as download_file:
-                    with mock.patch.object(media, "mux_audio", return_value=merged):
-                        self.assertIs(media.restore_audio(video, job, info), merged)
-                download_file.assert_called_once_with(
-                    "https://sf/a.m4a", None, directory / "music.m4a"
+            def no_mix():
+                return mock.patch.object(
+                    media, "download_tiktok_mix", return_value=None
                 )
 
+            with no_mix():
+                with mock.patch.object(media, "tiktok_music_url", return_value=None):
+                    self.assertIs(media.restore_audio(video, job, info), video)
+
+            with no_mix():
+                with mock.patch.object(
+                    media, "tiktok_music_url", return_value="https://sf/a.m4a"
+                ):
+                    with mock.patch.object(media, "download_file") as download_file:
+                        with mock.patch.object(media, "mux_audio", return_value=merged):
+                            self.assertIs(media.restore_audio(video, job, info), merged)
+                    download_file.assert_called_once_with(
+                        "https://sf/a.m4a", None, directory / "music.m4a"
+                    )
+
+            with no_mix():
+                with mock.patch.object(
+                    media, "tiktok_music_url", side_effect=RuntimeError("boom")
+                ):
+                    self.assertIs(media.restore_audio(video, job, info), video)
+
             with mock.patch.object(
-                media, "tiktok_music_url", side_effect=RuntimeError("boom")
+                media, "download_tiktok_mix", return_value=directory / "mix.mp4"
             ):
-                self.assertIs(media.restore_audio(video, job, info), video)
+                with mock.patch.object(media, "has_audio_stream", return_value=True):
+                    with mock.patch.object(media, "tiktok_music_url") as music_url:
+                        with mock.patch.object(media, "mux_audio", return_value=merged):
+                            self.assertIs(media.restore_audio(video, job, info), merged)
+                music_url.assert_not_called()
+
+            with mock.patch.object(
+                media, "download_tiktok_mix", return_value=directory / "mix.mp4"
+            ):
+                with mock.patch.object(media, "has_audio_stream", return_value=False):
+                    with mock.patch.object(
+                        media, "download_file", return_value=directory / "music.m4a"
+                    ):
+                        with mock.patch.object(
+                            media, "tiktok_music_url", return_value="https://sf/a.m4a"
+                        ):
+                            with mock.patch.object(
+                                media, "mux_audio", return_value=merged
+                            ):
+                                self.assertIs(
+                                    media.restore_audio(video, job, info), merged
+                                )
 
     def test_download_video(self):
         with tempfile.TemporaryDirectory() as directory:
