@@ -292,7 +292,7 @@ class MainTests(unittest.TestCase):
                 service,
             )
             self.assertEqual(service.cache.clear.await_count, 1)
-            self.assertIn("Нет доступа", answers[1])
+            self.assertEqual(len(answers), 1)  # stranger gets no reply at all
 
         asyncio.run(check())
 
@@ -332,7 +332,7 @@ class MainTests(unittest.TestCase):
                         answer=answer,
                     )
                     await handlers.admin_cookie_upload(stranger, service)
-                    self.assertIn("Нет доступа", answers[1])
+                    self.assertEqual(len(answers), 1)  # stranger gets no reply at all
 
                 with env("YTDLP_COOKIES_FILE", ""):
                     await handlers.admin_cookie_upload(admin_message, service)

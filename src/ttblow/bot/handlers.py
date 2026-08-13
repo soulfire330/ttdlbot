@@ -104,7 +104,6 @@ def _is_admin(message: Message, service: VideoService) -> bool:
 @router.message(Command("clear-cache"))
 async def admin_clear_cache(message: Message, service: VideoService) -> None:
     if not _is_admin(message, service):
-        await message.answer("⛔ Нет доступа.")
         return
     await service.cache.clear()
     await message.answer("✅ Кэш очищен. Видео будут скачаны заново.")
@@ -114,7 +113,6 @@ async def admin_clear_cache(message: Message, service: VideoService) -> None:
 @router.message(F.document.file_name == "cookie.txt")
 async def admin_cookie_upload(message: Message, service: VideoService) -> None:
     if not _is_admin(message, service):
-        await message.answer("⛔ Нет доступа.")
         return
     destination = setting("YTDLP_COOKIES_FILE")
     if not destination:
