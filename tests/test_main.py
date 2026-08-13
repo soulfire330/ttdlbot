@@ -334,9 +334,16 @@ class MainTests(unittest.TestCase):
                     await handlers.admin_cookie_upload(stranger, service)
                     self.assertEqual(len(answers), 1)  # stranger gets no reply at all
 
-                with env("YTDLP_COOKIES_FILE", ""):
+                with mock.patch.object(
+                    handlers,
+                    "DEFAULT_COOKIES_FILE",
+                    str(Path(directory) / "default.txt"),
+                ):
                     await handlers.admin_cookie_upload(admin_message, service)
-                    self.assertIn("YTDLP_COOKIES_FILE", answers[1])
+                    self.assertEqual(
+                        (Path(directory) / "default.txt").read_bytes(), b"sessionid=abc"
+                    )
+                    self.assertIn("обновлены", answers[1])
 
                 with env("YTDLP_COOKIES_FILE", str(target)):
 
@@ -674,9 +681,19 @@ class MainTests(unittest.TestCase):
         plain = extractor.extractor_options(None)
         self.assertNotIn("proxy", plain)
         self.assertNotIn("outtmpl", plain)
-        with env("YTDLP_COOKIES_FILE", "/data/cookies.txt"):
+        with tempfile.TemporaryDirectory() as directory:
+            cookies = Path(directory) / "cookies.txt"
+            cookies.write_bytes(b"")
+            with env("YTDLP_COOKIES_FILE", str(cookies)):
+                self.assertEqual(
+                    extractor.extractor_options(None)["cookiefile"], str(cookies)
+                )
+            with env("YTDLP_COOKIES_FILE", str(Path(directory) / "missing.txt")):
+                self.assertNotIn("cookiefile", extractor.extractor_options(None))
+        with mock.patch.object(extractor.Path, "is_file", return_value=True):
             self.assertEqual(
-                extractor.extractor_options(None)["cookiefile"], "/data/cookies.txt"
+                extractor.extractor_options(None)["cookiefile"],
+                config.DEFAULT_COOKIES_FILE,
             )
         self.assertNotIn("cookiefile", extractor.extractor_options(None))
 

@@ -6,7 +6,12 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
-from ttblow.config import DEFAULT_MAX_FILE_SIZE, DOWNLOAD_CHUNK_SIZE, setting
+from ttblow.config import (
+    DEFAULT_COOKIES_FILE,
+    DEFAULT_MAX_FILE_SIZE,
+    DOWNLOAD_CHUNK_SIZE,
+    setting,
+)
 from ttblow.utils.urls import TIKTOK_SHORT_LINK_HOSTS, tiktok_photo_url, tiktok_video_id
 
 
@@ -26,8 +31,8 @@ def extractor_options(
     }
     if proxy:
         options["proxy"] = proxy
-    cookies_file = setting("YTDLP_COOKIES_FILE")
-    if cookies_file:
+    cookies_file = setting("YTDLP_COOKIES_FILE") or DEFAULT_COOKIES_FILE
+    if Path(cookies_file).is_file():
         options["cookiefile"] = cookies_file
     if directory:
         options["outtmpl"] = str(Path(directory) / "%(id)s.%(ext)s")

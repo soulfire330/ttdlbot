@@ -14,7 +14,7 @@ from aiogram.types import (
     Message,
 )
 
-from ttblow.config import setting
+from ttblow.config import DEFAULT_COOKIES_FILE, setting
 from ttblow.services.video_service import VideoService
 from ttblow.utils.urls import media_url
 
@@ -114,13 +114,7 @@ async def admin_clear_cache(message: Message, service: VideoService) -> None:
 async def admin_cookie_upload(message: Message, service: VideoService) -> None:
     if not _is_admin(message, service):
         return
-    destination = setting("YTDLP_COOKIES_FILE")
-    if not destination:
-        await message.answer(
-            "❌ Укажите YTDLP_COOKIES_FILE в .env (например /data/cache/cookies.txt)."
-        )
-        return
-    target = Path(destination)
+    target = Path(setting("YTDLP_COOKIES_FILE") or DEFAULT_COOKIES_FILE)
     tmp = target.with_name(f"{target.name}.tmp")
     try:
         await message.bot.download(message.document, destination=tmp)
