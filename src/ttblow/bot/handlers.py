@@ -97,19 +97,39 @@ async def private_start(
 ) -> None:
     if message.chat.type != "private":
         return
-    url = service.claim_pm_url(command.args or "", message.from_user.id)
+    args = command.args or ""
+    url = media_url(args) or service.claim_pm_url(args, message.from_user.id)
     if not url:
+        me = await message.bot.me()
         await message.answer(
-            "Ссылка устарела. Отправьте её через inline-режим ещё раз."
+            "Привет! Отправьте ссылку на TikTok или Instagram Reels — скачаю видео.\n\n"
+            f"В любом чате можно через инлайн: @{me.username} <ссылка>"
         )
         return
+    await _process_private(message, service, url, args or url)
+
+
+@router.message()
+async def private_link(message: Message, service: VideoService) -> None:
+    if message.chat.type != "private" or not message.text:
+        return
+    url = media_url(message.text)
+    if not url:
+        return
+    if not await service.allow_user(message.from_user.id):
+        await message.answer("⏳ Слишком много запросов. Подождите немного.")
+        return
+    await _process_private(message, service, url, url)
+
+
+async def _process_private(
+    message: Message, service: VideoService, url: str, label: str
+) -> None:
     placeholder = await message.answer("⏳ Загрузка...")
     try:
         _, record = await service.result_for(url)
     except Exception as error:
-        logger.error(
-            "Failed to process private video for task %s: %s", command.args, error
-        )
+        logger.error("Failed to process private video %s: %s", label, error)
         await placeholder.edit_text(
             "❌ Не удалось обработать видео. Попробуйте ещё раз."
         )
@@ -121,10 +141,10 @@ async def private_start(
             media=InputMediaVideo(media=record["file_id"]),
         )
     except Exception as error:
-        logger.error("Failed to edit placeholder for task %s: %s", command.args, error)
+        logger.error("Failed to edit placeholder %s: %s", label, error)
         await service.bot.send_video(
             chat_id=message.chat.id,
             video=record["file_id"],
         )
         await placeholder.delete()
-    logger.info("Sent task %s to private chat %s", command.args, message.chat.id)
+    logger.info("Sent %s to private chat %s", label, message.chat.id)
