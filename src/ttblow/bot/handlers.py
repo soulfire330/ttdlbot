@@ -110,9 +110,11 @@ async def admin_clear_cache(message: Message, service: VideoService) -> None:
     logger.info("Cache cleared by admin %s", message.from_user.id)
 
 
-@router.message(F.document.file_name == "cookie.txt")
+@router.message(F.document)
 async def admin_cookie_upload(message: Message, service: VideoService) -> None:
     if not _is_admin(message, service):
+        return
+    if (message.document.file_name or "").lower() not in ("cookie.txt", "cookies.txt"):
         return
     target = Path(setting("YTDLP_COOKIES_FILE") or DEFAULT_COOKIES_FILE)
     tmp = target.with_name(f"{target.name}.tmp")

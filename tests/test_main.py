@@ -325,6 +325,25 @@ class MainTests(unittest.TestCase):
                     self.assertEqual(target.read_bytes(), b"sessionid=abc")
                     self.assertIn("обновлены", answers[0])
 
+                    plural = SimpleNamespace(
+                        from_user=SimpleNamespace(id=42),
+                        document=SimpleNamespace(file_name="COOKIES.txt", file_size=13),
+                        bot=SimpleNamespace(download=download),
+                        answer=answer,
+                    )
+                    await handlers.admin_cookie_upload(plural, service)
+                    self.assertIn("обновлены", answers[1])
+                    self.assertEqual(target.read_bytes(), b"sessionid=abc")
+
+                    other = SimpleNamespace(
+                        from_user=SimpleNamespace(id=42),
+                        document=SimpleNamespace(file_name="video.mp4", file_size=13),
+                        bot=SimpleNamespace(download=download),
+                        answer=answer,
+                    )
+                    await handlers.admin_cookie_upload(other, service)
+                    self.assertEqual(len(answers), 2)
+
                     stranger = SimpleNamespace(
                         from_user=SimpleNamespace(id=43),
                         document=document,
@@ -343,7 +362,7 @@ class MainTests(unittest.TestCase):
                     self.assertEqual(
                         (Path(directory) / "default.txt").read_bytes(), b"sessionid=abc"
                     )
-                    self.assertIn("обновлены", answers[1])
+                    self.assertIn("обновлены", answers[2])
 
                 with env("YTDLP_COOKIES_FILE", str(target)):
 
@@ -357,7 +376,7 @@ class MainTests(unittest.TestCase):
                         answer=answer,
                     )
                     await handlers.admin_cookie_upload(failing, service)
-                    self.assertIn("Не удалось записать", answers[2])
+                    self.assertIn("Не удалось записать", answers[3])
                     self.assertEqual(target.read_bytes(), b"sessionid=abc")
 
         asyncio.run(check())
