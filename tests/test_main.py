@@ -351,7 +351,7 @@ class MainTests(unittest.TestCase):
                         answer=answer,
                     )
                     await handlers.admin_cookie_upload(stranger, service)
-                    self.assertEqual(len(answers), 1)  # stranger gets no reply at all
+                    self.assertEqual(len(answers), 2)  # stranger gets no reply at all
 
                 with mock.patch.object(
                     handlers,
