@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
-from aiogram import Router
-from aiogram.filters import CommandObject, CommandStart
+from aiogram import F, Router
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultCachedVideo,
@@ -13,6 +14,7 @@ from aiogram.types import (
     Message,
 )
 
+from ttblow.config import setting
 from ttblow.services.video_service import VideoService
 from ttblow.utils.urls import media_url
 
@@ -89,6 +91,55 @@ async def inline_query(query: InlineQuery, service: VideoService) -> None:
         )
     except Exception as error:
         logger.error("Failed to answer inline query %s: %s", query.id, error)
+
+
+def _is_admin(message: Message, service: VideoService) -> bool:
+    return (
+        service.config.admin_chat_id != 0
+        and message.from_user is not None
+        and message.from_user.id == service.config.admin_chat_id
+    )
+
+
+@router.message(Command("clear-cache"))
+async def admin_clear_cache(message: Message, service: VideoService) -> None:
+    if not _is_admin(message, service):
+        await message.answer("⛔ Нет доступа.")
+        return
+    await service.cache.clear()
+    await message.answer("✅ Кэш очищен. Видео будут скачаны заново.")
+    logger.info("Cache cleared by admin %s", message.from_user.id)
+
+
+@router.message(F.document.file_name == "cookie.txt")
+async def admin_cookie_upload(message: Message, service: VideoService) -> None:
+    if not _is_admin(message, service):
+        await message.answer("⛔ Нет доступа.")
+        return
+    destination = setting("YTDLP_COOKIES_FILE")
+    if not destination:
+        await message.answer(
+            "❌ Укажите YTDLP_COOKIES_FILE в .env (например /data/cache/cookies.txt)."
+        )
+        return
+    target = Path(destination)
+    tmp = target.with_name(f"{target.name}.tmp")
+    try:
+        await message.bot.download(message.document, destination=tmp)
+        tmp.replace(target)
+    except Exception as error:
+        logger.error("Failed to update cookies file: %s", error)
+        await message.answer(f"❌ Не удалось записать cookies: {error}")
+        return
+    await message.answer(
+        f"✅ Cookies обновлены ({message.document.file_size} байт). "
+        "Новые запросы будут использовать их."
+    )
+    logger.info(
+        "Cookies updated by admin %s (%d bytes)",
+        message.from_user.id,
+        message.document.file_size,
+    )
 
 
 @router.message(CommandStart())

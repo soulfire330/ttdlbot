@@ -48,5 +48,9 @@ class FileIdCache:
         self.ram.pop(key, None)
         await asyncio.to_thread(self.disk.delete, key)
 
+    async def clear(self) -> None:
+        self.ram.clear()
+        await asyncio.to_thread(self.disk.clear)
+
     async def close(self) -> None:
         await asyncio.to_thread(self.disk.close)

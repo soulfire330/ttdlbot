@@ -27,6 +27,7 @@ FFMPEG_ERROR_TAIL = 500
 class ServiceConfig:
     proxy: str | None
     cache_chat_id: int
+    admin_chat_id: int = 0
 
 
 def setting(name: str, default: str | None = None) -> str | None:

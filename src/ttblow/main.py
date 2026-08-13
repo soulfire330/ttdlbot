@@ -35,7 +35,13 @@ async def main() -> None:
     telegram_proxy = setting("TELEGRAM_PROXY") or proxy
     bot = Bot(token, session=AiohttpSession(proxy=telegram_proxy))
     cache = FileIdCache()
-    service = VideoService(bot, cache, ServiceConfig(proxy, int(cache_chat_id)))
+    service = VideoService(
+        bot,
+        cache,
+        ServiceConfig(
+            proxy, int(cache_chat_id), int(setting("ADMIN_CHAT_ID", "0") or 0)
+        ),
+    )
     dispatcher = make_dispatcher(service)
 
     logger.info(

@@ -255,6 +255,106 @@ class MainTests(unittest.TestCase):
 
         asyncio.run(check())
 
+    def test_cache_clear(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as directory:
+                with env("DISK_CACHE_DIR", str(Path(directory) / "cache")):
+                    store = cache.FileIdCache()
+                    await store.set("k", {"file_id": "abc"})
+                    self.assertEqual((await store.get("k"))["file_id"], "abc")
+                    await store.clear()
+                    self.assertIsNone(await store.get("k"))
+                    await store.close()
+
+        asyncio.run(check())
+
+    def test_clear_cache_requires_admin(self):
+        async def check():
+            service = video_service.VideoService(
+                object(),
+                SimpleNamespace(clear=AsyncMock()),
+                config.ServiceConfig(None, 0, admin_chat_id=42),
+            )
+            answers = []
+
+            async def answer(text):
+                answers.append(text)
+
+            await handlers.admin_clear_cache(
+                SimpleNamespace(from_user=SimpleNamespace(id=42), answer=answer),
+                service,
+            )
+            service.cache.clear.assert_awaited_once()
+            self.assertIn("очищен", answers[0])
+
+            await handlers.admin_clear_cache(
+                SimpleNamespace(from_user=SimpleNamespace(id=43), answer=answer),
+                service,
+            )
+            self.assertEqual(service.cache.clear.await_count, 1)
+            self.assertIn("Нет доступа", answers[1])
+
+        asyncio.run(check())
+
+    def test_admin_cookie_upload(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "cookies.txt"
+                with env("YTDLP_COOKIES_FILE", str(target)):
+                    service = video_service.VideoService(
+                        object(),
+                        object(),
+                        config.ServiceConfig(None, 0, admin_chat_id=42),
+                    )
+                    answers = []
+
+                    async def answer(text):
+                        answers.append(text)
+
+                    async def download(document, destination):
+                        Path(destination).write_bytes(b"sessionid=abc")
+
+                    document = SimpleNamespace(file_name="cookie.txt", file_size=13)
+                    admin_message = SimpleNamespace(
+                        from_user=SimpleNamespace(id=42),
+                        document=document,
+                        bot=SimpleNamespace(download=download),
+                        answer=answer,
+                    )
+                    await handlers.admin_cookie_upload(admin_message, service)
+                    self.assertEqual(target.read_bytes(), b"sessionid=abc")
+                    self.assertIn("обновлены", answers[0])
+
+                    stranger = SimpleNamespace(
+                        from_user=SimpleNamespace(id=43),
+                        document=document,
+                        bot=SimpleNamespace(download=download),
+                        answer=answer,
+                    )
+                    await handlers.admin_cookie_upload(stranger, service)
+                    self.assertIn("Нет доступа", answers[1])
+
+                with env("YTDLP_COOKIES_FILE", ""):
+                    await handlers.admin_cookie_upload(admin_message, service)
+                    self.assertIn("YTDLP_COOKIES_FILE", answers[2])
+
+                with env("YTDLP_COOKIES_FILE", str(target)):
+
+                    async def fail_download(document, destination):
+                        raise PermissionError("denied")
+
+                    failing = SimpleNamespace(
+                        from_user=SimpleNamespace(id=42),
+                        document=document,
+                        bot=SimpleNamespace(download=fail_download),
+                        answer=answer,
+                    )
+                    await handlers.admin_cookie_upload(failing, service)
+                    self.assertIn("Не удалось записать", answers[3])
+                    self.assertEqual(target.read_bytes(), b"sessionid=abc")
+
+        asyncio.run(check())
+
     def test_singleflight(self):
         async def check():
             service = video_service.VideoService(
