@@ -336,7 +336,7 @@ class MainTests(unittest.TestCase):
 
                 with env("YTDLP_COOKIES_FILE", ""):
                     await handlers.admin_cookie_upload(admin_message, service)
-                    self.assertIn("YTDLP_COOKIES_FILE", answers[2])
+                    self.assertIn("YTDLP_COOKIES_FILE", answers[1])
 
                 with env("YTDLP_COOKIES_FILE", str(target)):
 
@@ -350,7 +350,7 @@ class MainTests(unittest.TestCase):
                         answer=answer,
                     )
                     await handlers.admin_cookie_upload(failing, service)
-                    self.assertIn("Не удалось записать", answers[3])
+                    self.assertIn("Не удалось записать", answers[2])
                     self.assertEqual(target.read_bytes(), b"sessionid=abc")
 
         asyncio.run(check())
