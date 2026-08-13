@@ -50,7 +50,10 @@ class MainTests(unittest.TestCase):
         )
 
     def test_slideshow_frame_rate(self):
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 12), 2 / 3)
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 24), 1 / 3)
+        # 1.5 с/кадр → минимум 2 с, 15 с/кадр → максимум 4 с
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 12), 0.5)
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(2, 30), 0.25)
         with self.assertRaises(ValueError):
             slideshow.slideshow_frame_rate(0, 12)
 
@@ -967,17 +970,37 @@ class MainTests(unittest.TestCase):
             with mock.patch.object(
                 slideshow, "download_file", return_value=directory / "audio.mp3"
             ) as download_file:
-                with mock.patch.object(slideshow, "run_ffmpeg", return_value=output):
-                    got_info, got_path = slideshow.download_slideshow(info, images, job)
+                with mock.patch.object(slideshow, "media_duration", return_value=4.0):
+                    with mock.patch.object(
+                        slideshow, "run_ffmpeg", return_value=output
+                    ) as run_ffmpeg:
+                        got_info, got_path = slideshow.download_slideshow(
+                            info, images, job
+                        )
 
+            args = run_ffmpeg.call_args.args[0]
+            self.assertNotIn("-stream_loop", args)
             self.assertEqual(got_path, output)
             self.assertEqual(got_info["ext"], "mp4")
             self.assertEqual(got_info["width"], config.SLIDESHOW_WIDTH)
+            self.assertEqual(got_info["duration"], 4.0)
             download_file.assert_called_once_with(
                 "https://sf/a.mp3", None, directory / "audio.mp3"
             )
             with self.assertRaises(ValueError):
                 slideshow.download_slideshow({**info, "formats": []}, images, job)
+
+            with mock.patch.object(
+                slideshow, "download_file", return_value=directory / "audio.mp3"
+            ):
+                with mock.patch.object(slideshow, "media_duration", return_value=2.0):
+                    with mock.patch.object(
+                        slideshow, "run_ffmpeg", return_value=output
+                    ) as run_ffmpeg:
+                        slideshow.download_slideshow(info, images, job)
+            args = run_ffmpeg.call_args.args[0]
+            loop = args.index("-stream_loop")
+            self.assertEqual(args[loop + 1], "-1")
 
     def test_resolve_video_flow(self):
         async def check():

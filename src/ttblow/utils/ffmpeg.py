@@ -44,6 +44,28 @@ def has_audio_stream(path: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def media_duration(path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
 def _frame_rate(value: str) -> Fraction | None:
     numerator, separator, denominator = value.strip().partition("/")
     denominator = denominator if separator else "1"
