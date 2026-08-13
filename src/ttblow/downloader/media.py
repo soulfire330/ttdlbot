@@ -18,7 +18,7 @@ from ttblow.downloader.extractor import (
     resolve_url,
     tiktok_aweme_data,
 )
-from ttblow.utils.ffmpeg import has_audio_stream, mux_audio
+from ttblow.utils.ffmpeg import has_audio_stream, is_vfr, mux_audio, normalize_cfr
 from ttblow.utils.urls import source_name
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,9 @@ def download_video(job: Job) -> tuple[dict[str, Any], Path]:
 
     if info.get("ext") != "mp4" or not path.is_file():
         raise ValueError("yt-dlp не скачал доступный mp4")
+    if is_vfr(path):
+        logger.info("Normalizing variable frame rate for %s", info.get("id"))
+        path = normalize_cfr(path, job.directory / "cfr.mp4")
     validate_video(info, path)
     if source_name(job.url) == "tiktok" and not has_audio_stream(path):
         path = restore_audio(path, job, info)

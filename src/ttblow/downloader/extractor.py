@@ -26,6 +26,9 @@ def extractor_options(
     }
     if proxy:
         options["proxy"] = proxy
+    cookies_file = setting("YTDLP_COOKIES_FILE")
+    if cookies_file:
+        options["cookiefile"] = cookies_file
     if directory:
         options["outtmpl"] = str(Path(directory) / "%(id)s.%(ext)s")
     return options
