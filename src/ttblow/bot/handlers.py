@@ -143,12 +143,17 @@ async def private_start(
     if message.chat.type != "private":
         return
     args = command.args or ""
-    url = media_url(args) or service.claim_pm_url(args, message.from_user.id)
-    if not url:
+    if not args:
         me = await message.bot.me()
         await message.answer(
             "Привет! Отправьте ссылку на TikTok или Instagram Reels — скачаю видео.\n\n"
             f"В любом чате можно через инлайн: @{me.username} <ссылка>"
+        )
+        return
+    url = media_url(args) or service.claim_pm_url(args, message.from_user.id)
+    if not url:
+        await message.answer(
+            "Ссылка устарела или уже обрабатывается. Отправьте её через инлайн ещё раз."
         )
         return
     await _process_private(message, service, url, args or url)
