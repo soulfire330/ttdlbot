@@ -1,7 +1,6 @@
 """Обёртки над subprocess: ffmpeg и ffprobe."""
 
 import subprocess
-from fractions import Fraction
 from pathlib import Path
 
 from ttblow.config import FFMPEG_ERROR_TAIL
@@ -64,67 +63,6 @@ def media_duration(path: Path) -> float:
         return float(result.stdout.strip())
     except ValueError:
         return 0.0
-
-
-def _frame_rate(value: str) -> Fraction | None:
-    numerator, separator, denominator = value.strip().partition("/")
-    denominator = denominator if separator else "1"
-    if not (numerator.isdigit() and denominator.isdigit()) or denominator == "0":
-        return None
-    rate = Fraction(int(numerator), int(denominator))
-    return rate if rate else None
-
-
-def is_vfr(path: Path) -> bool:
-    """True, если у видео неравномерные таймстампы (VFR): nominal != avg fps."""
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=avg_frame_rate,r_frame_rate",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    avg, _, nominal = result.stdout.strip().partition(",")
-    avg_rate, nominal_rate = _frame_rate(avg), _frame_rate(nominal)
-    return (
-        avg_rate is not None and nominal_rate is not None and avg_rate != nominal_rate
-    )
-
-
-def normalize_cfr(path: Path, output_path: Path) -> Path:
-    """Ре-энкод видео с равномерными таймстампами; звук копируется как есть."""
-    return run_ffmpeg(
-        [
-            "-i",
-            str(path),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-c:a",
-            "copy",
-            "-fps_mode",
-            "cfr",
-            str(output_path),
-        ],
-        output_path,
-    )
 
 
 def mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> Path:

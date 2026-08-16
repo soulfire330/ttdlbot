@@ -517,66 +517,6 @@ class MainTests(unittest.TestCase):
             media.mux_audio(silent, audio, merged)
             self.assertTrue(media.has_audio_stream(merged))
 
-    def test_is_vfr_and_normalize_cfr(self):
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            cfr = directory / "cfr.mp4"
-            vfr = directory / "vfr.mp4"
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "testsrc=duration=1:size=64x64:rate=30",
-                    "-c:v",
-                    "libx264",
-                    str(cfr),
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "testsrc=duration=1:size=64x64:rate=30",
-                    "-vf",
-                    "setpts='0.05*TB*N-0.01*TB*mod(N,2)'",
-                    "-an",
-                    "-c:v",
-                    "libx264",
-                    "-fps_mode",
-                    "passthrough",
-                    str(vfr),
-                ],
-                check=True,
-            )
-            self.assertFalse(ffmpeg.is_vfr(cfr))
-            self.assertTrue(ffmpeg.is_vfr(vfr))
-            self.assertFalse(ffmpeg.is_vfr(directory / "missing.mp4"))
-            normalized = directory / "normalized.mp4"
-            ffmpeg.normalize_cfr(vfr, normalized)
-            self.assertFalse(ffmpeg.is_vfr(normalized))
-
-    def test_is_vfr_parsing(self):
-        def probe(stdout):
-            result = SimpleNamespace(returncode=0, stdout=stdout)
-            with mock.patch.object(ffmpeg.subprocess, "run", return_value=result):
-                return ffmpeg.is_vfr(Path("/x.mp4"))
-
-        self.assertTrue(probe("48000/1691,30/1\n"))
-        self.assertFalse(probe("30000/1001,30000/1001\n"))
-        self.assertFalse(probe("0/0,30/1\n"))
-        self.assertFalse(probe(""))
-
     def test_video_record_uses_uploaded_video_dims(self):
         video = SimpleNamespace(file_id="abc", width=1080, height=1920, duration=30)
         record = video_service.video_record({"title": "t", "uploader": "u"}, video)
@@ -1104,7 +1044,7 @@ class MainTests(unittest.TestCase):
             job = media.Job("https://www.tiktok.com/@u/video/123", None, directory)
             info = {"id": "123", "ext": "mp4"}
 
-            def run(has_audio, vfr=False):
+            def run(has_audio):
                 with mock.patch.object(media.yt_dlp, "YoutubeDL") as youtube_dl:
                     with mock.patch.object(
                         media, "has_audio_stream", return_value=has_audio
@@ -1112,25 +1052,18 @@ class MainTests(unittest.TestCase):
                         with mock.patch.object(
                             media, "restore_audio", return_value=video
                         ) as restore:
-                            with mock.patch.object(media, "is_vfr", return_value=vfr):
-                                with mock.patch.object(
-                                    media, "normalize_cfr", return_value=video
-                                ) as normalize:
-                                    ydl = youtube_dl.return_value.__enter__.return_value
-                                    ydl.extract_info.return_value = info
-                                    ydl.prepare_filename.return_value = str(video)
-                                    _, got_path = media.download_video(job)
-                                    return got_path, restore, normalize
+                            ydl = youtube_dl.return_value.__enter__.return_value
+                            ydl.extract_info.return_value = info
+                            ydl.prepare_filename.return_value = str(video)
+                            _, got_path = media.download_video(job)
+                            return got_path, restore
 
-            got_path, restore, _ = run(True)
+            got_path, restore = run(True)
             self.assertEqual(got_path, video)
             restore.assert_not_called()
-            got_path, restore, _ = run(False)
+            got_path, restore = run(False)
             self.assertEqual(got_path, video)
             restore.assert_called_once()
-            _, restore, normalize = run(True, vfr=True)
-            normalize.assert_called_once()
-            restore.assert_not_called()
 
             info_bad = {**info, "ext": "webm"}
             with mock.patch.object(media.yt_dlp, "YoutubeDL") as youtube_dl:
