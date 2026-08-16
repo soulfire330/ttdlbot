@@ -150,11 +150,15 @@ async def private_start(
             f"В любом чате можно через инлайн: @{me.username} <ссылка>"
         )
         return
-    url = media_url(args) or service.claim_pm_url(args, message.from_user.id)
+    url = media_url(args)
+    if url is None:
+        url = service.claim_pm_url(args, message.from_user.id)
     if not url:
-        await message.answer(
-            "Ссылка устарела или уже обрабатывается. Отправьте её через инлайн ещё раз."
-        )
+        if not service.was_claimed(args, message.from_user.id):
+            await message.answer(
+                "Ссылка устарела или уже обрабатывается. "
+                "Отправьте её через инлайн ещё раз."
+            )
         return
     await _process_private(message, service, url, args or url)
 

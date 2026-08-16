@@ -135,9 +135,31 @@ class MainTests(unittest.TestCase):
             )
             command = SimpleNamespace(args=task_id)
             await handlers.private_start(message, command, service)
+            self.assertEqual(len(answers), 0)  # duplicate /start is ignored
+            message.bot.me.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_private_start_unknown_task_id(self):
+        async def check():
+            service = video_service.VideoService(
+                object(), object(), config.ServiceConfig(None, 0)
+            )
+            answers = []
+
+            async def answer(text):
+                answers.append(text)
+
+            message = SimpleNamespace(
+                chat=SimpleNamespace(id=7, type="private"),
+                from_user=SimpleNamespace(id=42),
+                bot=SimpleNamespace(me=AsyncMock()),
+                answer=answer,
+            )
+            command = SimpleNamespace(args="missing-token")
+            await handlers.private_start(message, command, service)
             self.assertEqual(len(answers), 1)
             self.assertIn("Ссылка устарела", answers[0])
-            message.bot.me.assert_not_called()
 
         asyncio.run(check())
 

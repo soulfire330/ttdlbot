@@ -53,6 +53,11 @@ class VideoService:
             maxsize=int(setting("PM_TASK_MAXSIZE", "10000")),
             ttl=int(setting("PM_TASK_TTL", str(24 * 60 * 60))),
         )
+        # Telegram clients sometimes send /start twice on switch_pm tap
+        self.claimed = TTLCache(
+            maxsize=int(setting("PM_TASK_MAXSIZE", "10000")),
+            ttl=300,
+        )
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight: dict[str, asyncio.Task] = {}
         self.rate_limit = TTLCache(
@@ -82,7 +87,11 @@ class VideoService:
         if not task or task[0] != user_id:
             return None
         self.pm_urls.pop(task_id, None)
+        self.claimed[task_id] = user_id
         return task[1]
+
+    def was_claimed(self, task_id: str, user_id: int) -> bool:
+        return self.claimed.get(task_id) == user_id
 
     async def result_for(self, url: str) -> tuple[str, dict[str, Any]]:
         request_key = normalized_url(url)
