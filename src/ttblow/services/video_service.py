@@ -15,8 +15,14 @@ from cachetools import TTLCache
 
 from ttblow.config import DEFAULT_TEMP_DIR, ServiceConfig, setting
 from ttblow.downloader.extractor import extract_metadata
-from ttblow.downloader.media import Job, download_video, validate_video
-from ttblow.downloader.slideshow import download_images, download_slideshow
+from ttblow.downloader.media import (
+    Job,
+    audio_url,
+    download_file,
+    download_images,
+    download_video,
+    validate_video,
+)
 from ttblow.services.cache import FileIdCache
 from ttblow.utils.urls import normalized_url, source_name
 
@@ -28,16 +34,33 @@ def video_key(info: dict[str, Any], url: str) -> str:
     return f"{source_name(url)}:{key}"
 
 
-def video_record(info: dict[str, Any], video: Video) -> dict[str, Any]:
+def title_and_description(info: dict[str, Any], fallback: str) -> dict[str, str]:
     return {
-        "file_id": video.file_id,
-        "title": (info.get("title") or "TikTok video")[:256],
+        "title": (info.get("title") or fallback)[:256],
         "description": (f"@{info['uploader']}" if info.get("uploader") else "TikTok")[
             :255
         ],
+    }
+
+
+def video_record(info: dict[str, Any], video: Video) -> dict[str, Any]:
+    return {
+        "file_id": video.file_id,
+        **title_and_description(info, "TikTok video"),
         "video_width": video.width,
         "video_height": video.height,
         "video_duration": video.duration,
+    }
+
+
+def photo_record(
+    info: dict[str, Any], file_ids: list[str], audio_file_id: str | None
+) -> dict[str, Any]:
+    return {
+        "type": "photo",
+        "file_ids": file_ids,
+        "audio_file_id": audio_file_id,
+        **title_and_description(info, "TikTok photo"),
     }
 
 
@@ -89,12 +112,13 @@ class VideoService:
     async def cached_record_if_valid(
         self, key: str, record: dict[str, Any], source: str | None
     ) -> dict[str, Any] | None:
-        if record.get("type") == "photo":
+        if record.get("type") == "photo" and not record.get("file_ids"):
             await self.cache.delete(key)
             return None
         if source == "disk":
+            file_ids = record.get("file_ids") or [record["file_id"]]
             try:
-                await self.bot.get_file(record["file_id"])
+                await self.bot.get_file(file_ids[0])
             except TelegramBadRequest:
                 await self.cache.delete(key)
                 return None
@@ -157,8 +181,10 @@ class VideoService:
                     key,
                     time.perf_counter() - stage_start,
                 )
-                info, path = await asyncio.to_thread(
-                    download_slideshow, metadata, images, job
+                record = photo_record(
+                    metadata,
+                    await self._upload_photos(images),
+                    await self._upload_audio(metadata, job),
                 )
             else:
                 stage_start = time.perf_counter()
@@ -169,22 +195,63 @@ class VideoService:
                     key,
                     time.perf_counter() - stage_start,
                 )
-            stage_start = time.perf_counter()
-            message = await self.bot.send_video(
-                chat_id=self.config.cache_chat_id,
-                video=FSInputFile(path),
-                supports_streaming=True,
-                request_timeout=self.telegram_timeout,
-            )
-            record = video_record(info, message.video)
-            logger.info(
-                "Uploaded Telegram video %s in %.2fs",
-                key,
-                time.perf_counter() - stage_start,
-            )
+                stage_start = time.perf_counter()
+                message = await self.bot.send_video(
+                    chat_id=self.config.cache_chat_id,
+                    video=FSInputFile(path),
+                    supports_streaming=True,
+                    request_timeout=self.telegram_timeout,
+                )
+                record = video_record(info, message.video)
+                logger.info(
+                    "Uploaded Telegram video %s in %.2fs",
+                    key,
+                    time.perf_counter() - stage_start,
+                )
             await self.cache.set(key, record)
             await self.cache.set(alias, key)
         return record
+
+    async def _upload_photos(self, images: list[Path]) -> list[str]:
+        stage_start = time.perf_counter()
+        file_ids = []
+        for path in images:
+            message = await self.bot.send_photo(
+                chat_id=self.config.cache_chat_id,
+                photo=FSInputFile(path),
+                request_timeout=self.telegram_timeout,
+            )
+            file_ids.append(message.photo[-1].file_id)
+        logger.info(
+            "Uploaded %d Telegram photos in %.2fs",
+            len(file_ids),
+            time.perf_counter() - stage_start,
+        )
+        return file_ids
+
+    async def _upload_audio(
+        self, metadata: dict[str, Any], job: Job
+    ) -> str | None:
+        source_audio = audio_url(metadata)
+        if not source_audio:
+            return None
+        try:
+            path = await asyncio.to_thread(
+                download_file, source_audio, job.proxy, job.directory / "audio.mp3"
+            )
+            message = await self.bot.send_audio(
+                chat_id=self.config.cache_chat_id,
+                audio=FSInputFile(path),
+                title=(metadata.get("title") or "TikTok")[:64],
+                performer=(
+                    f"@{metadata['uploader']}" if metadata.get("uploader") else None
+                ),
+                request_timeout=self.telegram_timeout,
+            )
+        except Exception as error:
+            logger.warning("Failed to attach TikTok audio: %s", error)
+            return None
+        return message.audio.file_id
 
     async def close(self) -> None:
         tasks = list(self.inflight.values())

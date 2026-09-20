@@ -1,6 +1,7 @@
 """Скачивание видео, фото и восстановление звуковой дорожки."""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from ttblow.config import (
     DEFAULT_MAX_DURATION,
     DEFAULT_MAX_FILE_SIZE,
     DOWNLOAD_CHUNK_SIZE,
+    IMAGE_DOWNLOAD_WORKERS,
     setting,
 )
 from ttblow.downloader.extractor import (
@@ -61,6 +63,28 @@ def download_file(url: str, proxy: str | None, path: Path) -> Path:
         finally:
             response.close()
     return path
+
+
+def audio_url(info: dict[str, Any]) -> str | None:
+    return next(
+        (
+            format_info["url"]
+            for format_info in info.get("formats", [])
+            if format_info.get("vcodec") == "none" and format_info.get("url")
+        ),
+        None,
+    )
+
+
+def download_images(images: list[dict[str, Any]], job: Job) -> list[Path]:
+    def download(index_image: tuple[int, dict[str, Any]]) -> Path:
+        index, image = index_image
+        return download_file(image["url"], job.proxy, job.directory / f"{index}.jpg")
+
+    with ThreadPoolExecutor(
+        max_workers=min(IMAGE_DOWNLOAD_WORKERS, len(images))
+    ) as executor:
+        return list(executor.map(download, enumerate(images, 1)))
 
 
 def tiktok_music_url(url: str, proxy: str | None) -> str | None:

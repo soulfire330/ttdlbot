@@ -11,7 +11,14 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
     InlineQueryResultUnion,
+    InputMediaAudio,
+    InputMediaPhoto,
     InputMediaVideo,
+    InputRichBlockAudio,
+    InputRichBlockPhoto,
+    InputRichBlockSlideshow,
+    InputRichMessage,
+    InputRichMessageContent,
     InputTextMessageContent,
     Message,
 )
@@ -30,7 +37,35 @@ LOADING_TEXT = "⏳ Загрузка..."
 FAILURE_TEXT = "❌ Не удалось обработать видео. Попробуйте ещё раз."
 
 
-def cached_result(key: str, record: dict[str, Any]) -> InlineQueryResultCachedVideo:
+def photo_rich_message(record: dict[str, Any]) -> InputRichMessage:
+    photos = [
+        InputRichBlockPhoto(photo=InputMediaPhoto(media=file_id))
+        for file_id in record["file_ids"]
+    ]
+    blocks = [InputRichBlockSlideshow(blocks=photos)]
+    if record.get("audio_file_id"):
+        blocks.append(
+            InputRichBlockAudio(
+                audio=InputMediaAudio(media=record["audio_file_id"])
+            )
+        )
+    return InputRichMessage(blocks=blocks)
+
+
+def photo_result(key: str, record: dict[str, Any]) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id=f"photo:{key}",
+        title=record["title"],
+        description=record["description"],
+        input_message_content=InputRichMessageContent(
+            rich_message=photo_rich_message(record)
+        ),
+    )
+
+
+def cached_result(key: str, record: dict[str, Any]) -> InlineQueryResultUnion:
+    if record.get("type") == "photo":
+        return photo_result(key, record)
     return InlineQueryResultCachedVideo(
         id=f"video:{key}",
         video_file_id=record["file_id"],
@@ -91,10 +126,16 @@ async def edit_guest_when_ready(
         await edit_guest_text(service, inline_message_id, FAILURE_TEXT)
         return
     try:
-        await service.bot.edit_message_media(
-            media=InputMediaVideo(media=record["file_id"]),
-            inline_message_id=inline_message_id,
-        )
+        if record.get("type") == "photo":
+            await service.bot.edit_message_text(
+                rich_message=photo_rich_message(record),
+                inline_message_id=inline_message_id,
+            )
+        else:
+            await service.bot.edit_message_media(
+                media=InputMediaVideo(media=record["file_id"]),
+                inline_message_id=inline_message_id,
+            )
     except Exception as error:
         logger.error("Failed to edit guest message %s: %s", inline_message_id, error)
         await edit_guest_text(service, inline_message_id, FAILURE_TEXT)
@@ -216,13 +257,23 @@ async def _process_private(message: Message, service: VideoService, url: str) ->
         await placeholder.edit_text(FAILURE_TEXT)
         return
     try:
-        await service.bot.edit_message_media(
-            chat_id=message.chat.id,
-            message_id=placeholder.message_id,
-            media=InputMediaVideo(media=record["file_id"]),
-        )
+        if record.get("type") == "photo":
+            await service.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=placeholder.message_id,
+                rich_message=photo_rich_message(record),
+            )
+        else:
+            await service.bot.edit_message_media(
+                chat_id=message.chat.id,
+                message_id=placeholder.message_id,
+                media=InputMediaVideo(media=record["file_id"]),
+            )
     except Exception as error:
         logger.error("Failed to edit placeholder %s: %s", url, error)
+        if record.get("type") == "photo":
+            await placeholder.edit_text(FAILURE_TEXT)
+            return
         await service.bot.send_video(
             chat_id=message.chat.id,
             video=record["file_id"],

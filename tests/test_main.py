@@ -14,7 +14,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from ttblow import config, main as entry
 from ttblow.bot import handlers
-from ttblow.downloader import extractor, media, slideshow
+from ttblow.downloader import extractor, media
 from ttblow.services import cache, video_service
 from ttblow.utils import ffmpeg, fs, urls
 
@@ -60,17 +60,6 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(
             urls.tiktok_photo_url("https://www.tiktok.com/@user/video/123")
         )
-
-    def test_slideshow_frame_rate(self):
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 24), 1 / 3)
-        # 1.5 с/кадр → минимум 3 с, 15 с/кадр → максимум 5 с
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 12), 1 / 3)
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(2, 30), 0.2)
-        # одна картинка — всегда 10 с
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(1, 30), 0.1)
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(1, 4), 0.1)
-        with self.assertRaises(ValueError):
-            slideshow.slideshow_frame_rate(0, 12)
 
     def test_platform_cache_keys(self):
         self.assertEqual(
@@ -267,6 +256,52 @@ class MainTests(unittest.TestCase):
             self.assertEqual(edited[0]["media"].media, "abc")
             self.assertEqual(edited[0]["inline_message_id"], "im1")
             service.result_for.assert_called_once_with("https://vm.tiktok.com/abc/")
+
+        asyncio.run(check())
+
+    def test_guest_message_answers_placeholder_then_photos(self):
+        async def check():
+            edited = []
+
+            async def answer_guest_query(guest_query_id, result):
+                return SimpleNamespace(inline_message_id="im1")
+
+            async def edit_message_text(**kwargs):
+                edited.append(kwargs)
+
+            bot = SimpleNamespace(
+                answer_guest_query=answer_guest_query,
+                edit_message_text=edit_message_text,
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock(return_value=None)
+            service.result_for = AsyncMock(
+                return_value=(
+                    "tiktok:123",
+                    {
+                        "type": "photo",
+                        "file_ids": ["p1", "p2"],
+                        "title": "t",
+                        "description": "d",
+                    },
+                )
+            )
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://www.tiktok.com/@u/photo/123",
+            )
+            await handlers.guest_message(message, service)
+            await asyncio.sleep(0.01)
+            rich = edited[0]["rich_message"]
+            self.assertEqual(edited[0]["inline_message_id"], "im1")
+            self.assertEqual(
+                [block.photo.media for block in rich.blocks[0].blocks],
+                ["p1", "p2"],
+            )
 
         asyncio.run(check())
 
@@ -733,7 +768,7 @@ class MainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fetch(b"x" * (2 * 1024 * 1024 + 1))
 
-    def test_cached_record_if_valid_drops_photo_records(self):
+    def test_cached_record_if_valid_keeps_photo_records(self):
         async def check():
             deleted = []
 
@@ -744,11 +779,17 @@ class MainTests(unittest.TestCase):
             service = video_service.VideoService(
                 object(), StubCache(), config.ServiceConfig(None, 0)
             )
-            record = await service.cached_record_if_valid(
-                "tiktok:1", {"type": "photo"}, None
+            record = {"type": "photo", "file_ids": ["p1", "p2"]}
+            self.assertEqual(
+                await service.cached_record_if_valid("tiktok:1", record, "ram"),
+                record,
             )
-            self.assertIsNone(record)
-            self.assertEqual(deleted, ["tiktok:1"])
+            self.assertIsNone(
+                await service.cached_record_if_valid(
+                    "tiktok:2", {"type": "photo"}, "ram"
+                )
+            )
+            self.assertEqual(deleted, ["tiktok:2"])
 
         asyncio.run(check())
 
@@ -787,6 +828,15 @@ class MainTests(unittest.TestCase):
                 record,
             )
 
+            photos = {"type": "photo", "file_ids": ["p1", "p2"]}
+            self.assertEqual(
+                await working.cached_record_if_valid("tiktok:2", photos, "disk"),
+                photos,
+            )
+            self.assertIsNone(
+                await broken.cached_record_if_valid("tiktok:2", photos, "disk")
+            )
+
         asyncio.run(check())
 
     def test_required_missing_env(self):
@@ -822,9 +872,9 @@ class MainTests(unittest.TestCase):
             {"vcodec": "none", "url": "https://sf/a.mp3"},
             {"vcodec": "h264", "url": "https://sf/v.mp4"},
         ]
-        self.assertEqual(slideshow.audio_url({"formats": formats}), "https://sf/a.mp3")
-        self.assertIsNone(slideshow.audio_url({"formats": [{"vcodec": "h264"}]}))
-        self.assertIsNone(slideshow.audio_url({}))
+        self.assertEqual(media.audio_url({"formats": formats}), "https://sf/a.mp3")
+        self.assertIsNone(media.audio_url({"formats": [{"vcodec": "h264"}]}))
+        self.assertIsNone(media.audio_url({}))
 
     def test_extractor_options_proxy_and_directory(self):
         options = extractor.extractor_options("http://proxy:8080", Path("/tmp/out"))
@@ -862,6 +912,34 @@ class MainTests(unittest.TestCase):
         self.assertEqual(result.id, "video:tiktok:123")
         self.assertEqual(result.video_file_id, "abc")
         self.assertEqual(result.video_duration, 30)
+
+    def test_cached_result_photo(self):
+        record = {
+            "type": "photo",
+            "file_ids": ["p1", "p2"],
+            "audio_file_id": "a1",
+            "title": "t",
+            "description": "d",
+        }
+        result = handlers.cached_result("tiktok:123", record)
+        self.assertEqual(result.id, "photo:tiktok:123")
+        rich = result.input_message_content.rich_message
+        self.assertEqual([block.type for block in rich.blocks], ["slideshow", "audio"])
+        self.assertEqual(
+            [block.photo.media for block in rich.blocks[0].blocks], ["p1", "p2"]
+        )
+        self.assertEqual(rich.blocks[1].audio.media, "a1")
+
+    def test_cached_result_photo_without_audio(self):
+        record = {
+            "type": "photo",
+            "file_ids": ["p1"],
+            "title": "t",
+            "description": "d",
+        }
+        result = handlers.cached_result("tiktok:123", record)
+        rich = result.input_message_content.rich_message
+        self.assertEqual([block.type for block in rich.blocks], ["slideshow"])
 
     def test_make_dispatcher_work_data(self):
         service = object()
@@ -929,9 +1007,9 @@ class MainTests(unittest.TestCase):
             job = media.Job("https://www.tiktok.com/@u/photo/1", None, directory)
             images = [{"url": "https://a/1.jpg"}, {"url": "https://b/2.jpg"}]
             with mock.patch.object(
-                slideshow, "download_file", return_value=Path("stub.jpg")
+                media, "download_file", return_value=Path("stub.jpg")
             ) as download_file:
-                paths = slideshow.download_images(images, job)
+                paths = media.download_images(images, job)
             self.assertEqual(len(paths), 2)
             download_file.assert_any_call("https://a/1.jpg", None, directory / "1.jpg")
             download_file.assert_any_call("https://b/2.jpg", None, directory / "2.jpg")
@@ -1205,54 +1283,6 @@ class MainTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     media.download_video(job)
 
-    def test_download_slideshow(self):
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            job = media.Job("https://www.tiktok.com/@u/photo/123", None, directory)
-            info = {
-                "id": "123",
-                "duration": 6,
-                "formats": [{"vcodec": "none", "url": "https://sf/a.mp3"}],
-            }
-            output = directory / "slideshow.mp4"
-            output.write_bytes(b"x")
-            images = [directory / "1.jpg", directory / "2.jpg"]
-
-            with mock.patch.object(
-                slideshow, "download_file", return_value=directory / "audio.mp3"
-            ) as download_file:
-                with mock.patch.object(slideshow, "media_duration", return_value=6.0):
-                    with mock.patch.object(
-                        slideshow, "run_ffmpeg", return_value=output
-                    ) as run_ffmpeg:
-                        got_info, got_path = slideshow.download_slideshow(
-                            info, images, job
-                        )
-
-            args = run_ffmpeg.call_args.args[0]
-            self.assertNotIn("-stream_loop", args)
-            self.assertEqual(got_path, output)
-            self.assertEqual(got_info["ext"], "mp4")
-            self.assertEqual(got_info["width"], config.SLIDESHOW_WIDTH)
-            self.assertEqual(got_info["duration"], 6.0)
-            download_file.assert_called_once_with(
-                "https://sf/a.mp3", None, directory / "audio.mp3"
-            )
-            with self.assertRaises(ValueError):
-                slideshow.download_slideshow({**info, "formats": []}, images, job)
-
-            with mock.patch.object(
-                slideshow, "download_file", return_value=directory / "audio.mp3"
-            ):
-                with mock.patch.object(slideshow, "media_duration", return_value=2.0):
-                    with mock.patch.object(
-                        slideshow, "run_ffmpeg", return_value=output
-                    ) as run_ffmpeg:
-                        slideshow.download_slideshow(info, images, job)
-            args = run_ffmpeg.call_args.args[0]
-            loop = args.index("-stream_loop")
-            self.assertEqual(args[loop + 1], "-1")
-
     def test_resolve_video_flow(self):
         async def check():
             with tempfile.TemporaryDirectory() as directory:
@@ -1298,16 +1328,21 @@ class MainTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 with env("DISK_CACHE_DIR", str(Path(directory) / "cache")):
                     bot = SimpleNamespace(
-                        send_video=AsyncMock(
+                        send_photo=AsyncMock(
+                            side_effect=[
+                                SimpleNamespace(
+                                    photo=[SimpleNamespace(file_id="p1")]
+                                ),
+                                SimpleNamespace(
+                                    photo=[SimpleNamespace(file_id="p2")]
+                                ),
+                            ]
+                        ),
+                        send_audio=AsyncMock(
                             return_value=SimpleNamespace(
-                                video=SimpleNamespace(
-                                    file_id="abc",
-                                    width=1080,
-                                    height=1920,
-                                    duration=30,
-                                )
+                                audio=SimpleNamespace(file_id="a1")
                             )
-                        )
+                        ),
                     )
                     service = video_service.VideoService(
                         bot, cache.FileIdCache(), config.ServiceConfig(None, 0)
@@ -1316,6 +1351,7 @@ class MainTests(unittest.TestCase):
                         "id": "456",
                         "media_type": "photo",
                         "image_urls": [{"url": "u1"}, {"url": "u2"}],
+                        "formats": [{"vcodec": "none", "url": "https://sf/a.mp3"}],
                     }
                     with (
                         mock.patch.object(
@@ -1328,16 +1364,70 @@ class MainTests(unittest.TestCase):
                         ) as download_images,
                         mock.patch.object(
                             video_service,
-                            "download_slideshow",
-                            return_value=(metadata, Path("/tmp/s.mp4")),
-                        ),
+                            "download_file",
+                            return_value=Path("audio.mp3"),
+                        ) as download_file,
                     ):
                         key, record = await service._resolve(
                             "https://www.tiktok.com/@u/photo/456"
                         )
                     self.assertEqual(key, "tiktok:456")
-                    self.assertEqual(record["file_id"], "abc")
+                    self.assertEqual(record["type"], "photo")
+                    self.assertEqual(record["file_ids"], ["p1", "p2"])
+                    self.assertEqual(record["audio_file_id"], "a1")
+                    self.assertEqual(record["title"], "TikTok photo")
+                    self.assertEqual(bot.send_photo.await_count, 2)
+                    self.assertEqual(bot.send_audio.await_count, 1)
                     download_images.assert_called_once()
+                    audio_url_arg, proxy_arg, path_arg = download_file.call_args.args
+                    self.assertEqual(audio_url_arg, "https://sf/a.mp3")
+                    self.assertIsNone(proxy_arg)
+                    self.assertEqual(path_arg.name, "audio.mp3")
+
+        asyncio.run(check())
+
+    def test_resolve_photo_flow_audio_failure(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as directory:
+                with env("DISK_CACHE_DIR", str(Path(directory) / "cache")):
+                    bot = SimpleNamespace(
+                        send_photo=AsyncMock(
+                            return_value=SimpleNamespace(
+                                photo=[SimpleNamespace(file_id="p1")]
+                            )
+                        ),
+                        send_audio=AsyncMock(),
+                    )
+                    service = video_service.VideoService(
+                        bot, cache.FileIdCache(), config.ServiceConfig(None, 0)
+                    )
+                    metadata = {
+                        "id": "456",
+                        "media_type": "photo",
+                        "image_urls": [{"url": "u1"}],
+                        "formats": [{"vcodec": "none", "url": "https://sf/a.mp3"}],
+                    }
+                    with (
+                        mock.patch.object(
+                            video_service, "extract_metadata", return_value=metadata
+                        ),
+                        mock.patch.object(
+                            video_service,
+                            "download_images",
+                            return_value=[Path("1.jpg")],
+                        ),
+                        mock.patch.object(
+                            video_service,
+                            "download_file",
+                            side_effect=ValueError("audio is gone"),
+                        ),
+                    ):
+                        _, record = await service._resolve(
+                            "https://www.tiktok.com/@u/photo/456"
+                        )
+                    self.assertEqual(record["file_ids"], ["p1"])
+                    self.assertIsNone(record["audio_file_id"])
+                    self.assertEqual(bot.send_audio.await_count, 0)
 
         asyncio.run(check())
 
@@ -1459,14 +1549,20 @@ class MainTests(unittest.TestCase):
                                     duration=30,
                                 )
                             )
-                        )
+                        ),
+                        get_file=AsyncMock(
+                            side_effect=TelegramBadRequest(
+                                method="getFile", message="file not found"
+                            )
+                        ),
                     )
                     service = video_service.VideoService(
                         bot, cache.FileIdCache(), config.ServiceConfig(None, 0)
                     )
                     url = "https://www.tiktok.com/@u/video/123"
-                    await service.cache.set("tiktok:old", {"type": "photo"})
+                    await service.cache.set("tiktok:old", {"file_id": "gone"})
                     await service.cache.set("alias:" + url, "tiktok:old")
+                    service.cache.ram.clear()
                     with (
                         mock.patch.object(
                             video_service,
