@@ -1,13 +1,16 @@
 """Бот-интерфейс: guest-запросы, личка и админ-команды."""
 
 import asyncio
+import html
 import logging
+import random
 from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    InlineQuery,
     InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
     InlineQueryResultUnion,
@@ -20,12 +23,13 @@ from aiogram.types import (
     InputRichMessage,
     InputRichMessageContent,
     InputTextMessageContent,
+    LinkPreviewOptions,
     Message,
 )
 
 from ttblow.config import DEFAULT_COOKIES_FILE, setting
 from ttblow.services.video_service import VideoService
-from ttblow.utils.urls import first_media_url
+from ttblow.utils.urls import first_media_url, media_url
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,7 @@ background_tasks: set[asyncio.Task] = set()
 
 LOADING_TEXT = "⏳ Загрузка..."
 FAILURE_TEXT = "❌ Не удалось обработать видео. Попробуйте ещё раз."
+EMOJI_FILE = Path(__file__).with_name("emojis.txt")
 
 
 def photo_rich_message(record: dict[str, Any]) -> InputRichMessage:
@@ -83,6 +88,19 @@ def text_result(result_id: str, title: str, text: str) -> InlineQueryResultArtic
         title=title,
         input_message_content=InputTextMessageContent(message_text=text),
     )
+
+
+def message_media_url(message: Message) -> str | None:
+    """Ссылка из текста или из скрытого text_link-линка (@bot [скачай](url))."""
+    url = first_media_url(message.text or "")
+    if url is not None:
+        return url
+    for entity in message.entities or []:
+        if entity.type == "text_link" and entity.url:
+            linked = media_url(entity.url)
+            if linked is not None:
+                return linked
+    return None
 
 
 async def hint_text(message: Message) -> str:
@@ -143,6 +161,52 @@ async def edit_guest_when_ready(
     logger.info("Sent %s as guest message %s", url, inline_message_id)
 
 
+def emoji_pool() -> list[str]:
+    """Пул эмодзи из emojis.txt: по одному на строку."""
+    emojis = [
+        line.strip()
+        for line in EMOJI_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(emojis) < 5:
+        raise ValueError(f"{EMOJI_FILE.name}: нужно минимум 5 эмодзи")
+    return emojis
+
+
+def emoji_code() -> list[str]:
+    """Пять уникальных эмодзи: первый идёт в заголовок, все — на скрытую ссылку."""
+    return random.sample(emoji_pool(), 5)
+
+
+@router.inline_query()
+async def inline_link(query: InlineQuery) -> None:
+    """Результат прячет ссылку за эмодзи: упоминание в тексте запускает guest-флоу."""
+    url = first_media_url(query.query or "")
+    if url is None:
+        await query.answer([], cache_time=0)
+        return
+    me = await query.bot.me()
+    code = emoji_code()
+    await query.answer(
+        [
+            InlineQueryResultArticle(
+                id="hide-link",
+                title=f"{code[0]} Скачать видео",
+                description=url,
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        f"@{me.username} "
+                        f'<a href="{html.escape(url, quote=True)}">{"".join(code)}</a>'
+                    ),
+                    parse_mode="HTML",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                ),
+            )
+        ],
+        cache_time=0,
+    )
+
+
 @router.guest_message()
 async def guest_message(message: Message, service: VideoService) -> None:
     query_id = message.guest_query_id
@@ -153,7 +217,7 @@ async def guest_message(message: Message, service: VideoService) -> None:
         logger.warning("Rate limit exceeded for user %s", message.from_user.id)
         return
 
-    url = first_media_url(message.text or "")
+    url = message_media_url(message)
     if url is None:
         await answer_guest(
             service,
@@ -224,7 +288,7 @@ async def admin_cookie_upload(message: Message, service: VideoService) -> None:
 async def private_start(message: Message, service: VideoService) -> None:
     if message.chat.type != "private":
         return
-    url = first_media_url(message.text or "")
+    url = message_media_url(message)
     if url:
         await _process_private(message, service, url)
         return
@@ -239,7 +303,7 @@ async def private_start(message: Message, service: VideoService) -> None:
 async def private_link(message: Message, service: VideoService) -> None:
     if message.chat.type != "private" or not message.text:
         return
-    url = first_media_url(message.text)
+    url = message_media_url(message)
     if not url:
         return
     if not await service.allow_user(message.from_user.id):

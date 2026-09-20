@@ -53,7 +53,7 @@ async def main() -> None:
 
     try:
         await dispatcher.start_polling(
-            bot, allowed_updates=["message", "guest_message"]
+            bot, allowed_updates=["message", "guest_message", "inline_query"]
         )
     finally:
         await service.close()

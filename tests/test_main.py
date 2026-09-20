@@ -11,6 +11,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import MessageEntity
 
 from ttblow import config, main as entry
 from ttblow.bot import handlers
@@ -51,6 +52,30 @@ class MainTests(unittest.TestCase):
         )
         self.assertIsNone(urls.first_media_url("@my_bot привет"))
         self.assertIsNone(urls.first_media_url(""))
+
+    def test_message_media_url_from_text_link(self):
+        message = SimpleNamespace(
+            text="@my_bot скачай",
+            entities=[
+                MessageEntity(
+                    type="text_link",
+                    offset=7,
+                    length=6,
+                    url="https://www.tiktok.com/@u/video/123",
+                )
+            ],
+        )
+        self.assertEqual(
+            handlers.message_media_url(message),
+            "https://www.tiktok.com/@u/video/123",
+        )
+        message.entities[0].url = "https://example.com/reel/ABC/"
+        self.assertIsNone(handlers.message_media_url(message))
+        message.text = "@my_bot https://vm.tiktok.com/abc/"
+        message.entities = []
+        self.assertEqual(
+            handlers.message_media_url(message), "https://vm.tiktok.com/abc/"
+        )
 
     def test_tiktok_photo_url(self):
         self.assertEqual(
@@ -93,6 +118,7 @@ class MainTests(unittest.TestCase):
                     me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
                 ),
                 text="/start",
+                entities=[],
                 answer=answer,
             )
             await handlers.private_start(message, service)
@@ -186,6 +212,7 @@ class MainTests(unittest.TestCase):
                 chat=SimpleNamespace(id=7, type="private"),
                 from_user=SimpleNamespace(id=42),
                 text="привет",
+                entities=[],
                 answer=answer,
             )
             await handlers.private_link(message, service)
@@ -256,6 +283,71 @@ class MainTests(unittest.TestCase):
             self.assertEqual(edited[0]["media"].media, "abc")
             self.assertEqual(edited[0]["inline_message_id"], "im1")
             service.result_for.assert_called_once_with("https://vm.tiktok.com/abc/")
+
+        asyncio.run(check())
+
+    def test_emoji_pool_and_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "emojis.txt"
+            path.write_text("🦊\n\n🐼 \n🌵\n🦉\n🍄\n", encoding="utf-8")
+            with mock.patch.object(handlers, "EMOJI_FILE", path):
+                self.assertEqual(
+                    handlers.emoji_pool(), ["🦊", "🐼", "🌵", "🦉", "🍄"]
+                )
+                code = handlers.emoji_code()
+                self.assertEqual(len(code), 5)
+                self.assertEqual(len(set(code)), 5)
+                self.assertTrue(set(code) <= set(handlers.emoji_pool()))
+            path.write_text("🦊\n🐼\n", encoding="utf-8")
+            with mock.patch.object(handlers, "EMOJI_FILE", path):
+                with self.assertRaises(ValueError):
+                    handlers.emoji_pool()
+
+    def test_inline_link_hides_url_behind_mention(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append((results, kwargs))
+
+            query = SimpleNamespace(
+                query="https://www.tiktok.com/@u/video/123",
+                bot=SimpleNamespace(
+                    me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
+                ),
+                answer=answer,
+            )
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🐼", "🌵", "🦉", "🍄"]
+            ):
+                await handlers.inline_link(query)
+            results, kwargs = answered[0]
+            content = results[0].input_message_content
+            self.assertEqual(results[0].title, "🦊 Скачать видео")
+            self.assertEqual(
+                content.message_text,
+                '@my_bot <a href="https://www.tiktok.com/@u/video/123">🦊🐼🌵🦉🍄</a>',
+            )
+            self.assertEqual(content.parse_mode, "HTML")
+            self.assertTrue(content.link_preview_options.is_disabled)
+            self.assertEqual(kwargs["cache_time"], 0)
+
+        asyncio.run(check())
+
+    def test_inline_link_without_url_answers_nothing(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            query = SimpleNamespace(
+                query="привет",
+                bot=SimpleNamespace(me=AsyncMock()),
+                answer=answer,
+            )
+            await handlers.inline_link(query)
+            self.assertEqual(answered, [[]])
 
         asyncio.run(check())
 
@@ -363,6 +455,7 @@ class MainTests(unittest.TestCase):
                     me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
                 ),
                 text="@my_bot привет",
+                entities=[],
             )
             await handlers.guest_message(message, service)
             self.assertIn("@my_bot", answered[0][1].input_message_content.message_text)
