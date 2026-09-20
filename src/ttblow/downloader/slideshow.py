@@ -12,6 +12,7 @@ from ttblow.config import (
     SLIDESHOW_MAX_FRAME_DURATION,
     SLIDESHOW_MIN_FRAME_DURATION,
     SLIDESHOW_OUTPUT_FPS,
+    SLIDESHOW_SINGLE_FRAME_DURATION,
     SLIDESHOW_WIDTH,
 )
 from ttblow.downloader.media import Job, download_file, validate_video
@@ -43,9 +44,11 @@ def audio_url(info: dict[str, Any]) -> str | None:
 
 
 def slideshow_frame_rate(image_count: int, duration: float) -> float:
-    """FPS с длиной кадра 2–4 с: image_count/duration, ограниченная по краям."""
+    """FPS с длиной кадра 3–5 с, у одной картинки — всегда 10 с."""
     if image_count <= 0 or duration <= 0:
         raise ValueError("slideshow needs images and a positive duration")
+    if image_count == 1:
+        return 1 / SLIDESHOW_SINGLE_FRAME_DURATION
     rate = image_count / duration
     return max(
         1 / SLIDESHOW_MAX_FRAME_DURATION,

@@ -63,9 +63,12 @@ class MainTests(unittest.TestCase):
 
     def test_slideshow_frame_rate(self):
         self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 24), 1 / 3)
-        # 1.5 с/кадр → минимум 2 с, 15 с/кадр → максимум 4 с
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 12), 0.5)
-        self.assertAlmostEqual(slideshow.slideshow_frame_rate(2, 30), 0.25)
+        # 1.5 с/кадр → минимум 3 с, 15 с/кадр → максимум 5 с
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(8, 12), 1 / 3)
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(2, 30), 0.2)
+        # одна картинка — всегда 10 с
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(1, 30), 0.1)
+        self.assertAlmostEqual(slideshow.slideshow_frame_rate(1, 4), 0.1)
         with self.assertRaises(ValueError):
             slideshow.slideshow_frame_rate(0, 12)
 
@@ -1208,7 +1211,7 @@ class MainTests(unittest.TestCase):
             job = media.Job("https://www.tiktok.com/@u/photo/123", None, directory)
             info = {
                 "id": "123",
-                "duration": 4,
+                "duration": 6,
                 "formats": [{"vcodec": "none", "url": "https://sf/a.mp3"}],
             }
             output = directory / "slideshow.mp4"
@@ -1218,7 +1221,7 @@ class MainTests(unittest.TestCase):
             with mock.patch.object(
                 slideshow, "download_file", return_value=directory / "audio.mp3"
             ) as download_file:
-                with mock.patch.object(slideshow, "media_duration", return_value=4.0):
+                with mock.patch.object(slideshow, "media_duration", return_value=6.0):
                     with mock.patch.object(
                         slideshow, "run_ffmpeg", return_value=output
                     ) as run_ffmpeg:
@@ -1231,7 +1234,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(got_path, output)
             self.assertEqual(got_info["ext"], "mp4")
             self.assertEqual(got_info["width"], config.SLIDESHOW_WIDTH)
-            self.assertEqual(got_info["duration"], 4.0)
+            self.assertEqual(got_info["duration"], 6.0)
             download_file.assert_called_once_with(
                 "https://sf/a.mp3", None, directory / "audio.mp3"
             )
