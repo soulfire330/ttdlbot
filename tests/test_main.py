@@ -40,6 +40,18 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(urls.media_url("https://www.instagram.com/p/ABC/"))
         self.assertIsNone(urls.media_url("https://example.com/reel/ABC/"))
 
+    def test_first_media_url(self):
+        self.assertEqual(
+            urls.first_media_url("@my_bot https://vm.tiktok.com/abc/"),
+            "https://vm.tiktok.com/abc/",
+        )
+        self.assertEqual(
+            urls.first_media_url("смотри https://www.instagram.com/reel/ABC/ круто"),
+            "https://www.instagram.com/reel/ABC/",
+        )
+        self.assertIsNone(urls.first_media_url("@my_bot привет"))
+        self.assertIsNone(urls.first_media_url(""))
+
     def test_tiktok_photo_url(self):
         self.assertEqual(
             urls.tiktok_photo_url("https://www.tiktok.com/@user/photo/123?_r=1"),
@@ -71,98 +83,6 @@ class MainTests(unittest.TestCase):
             "instagram:123",
         )
 
-    def test_pm_task_is_user_bound(self):
-        service = video_service.VideoService(
-            object(), object(), config.ServiceConfig(None, 0)
-        )
-        url = "https://www.tiktok.com/@user/video/123"
-        task_id = service.register_pm_task(url, 42)
-        self.assertEqual(len(task_id), 32)
-        self.assertEqual(service.claim_pm_url(task_id, 42), url)
-        self.assertIsNone(service.claim_pm_url(task_id, 42))
-
-        other_task_id = service.register_pm_task(url, 42)
-        self.assertIsNone(service.claim_pm_url(other_task_id, 43))
-        self.assertEqual(service.claim_pm_url(other_task_id, 42), url)
-
-    def test_private_start_rejects_other_user(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            task_id = service.register_pm_task(
-                "https://www.tiktok.com/@u/video/123", 42
-            )
-            answers = []
-
-            async def answer(text):
-                answers.append(text)
-
-            message = SimpleNamespace(
-                chat=SimpleNamespace(id=7, type="private"),
-                from_user=SimpleNamespace(id=43),
-                bot=SimpleNamespace(
-                    me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
-                ),
-                answer=answer,
-            )
-            command = SimpleNamespace(args=task_id)
-            await handlers.private_start(message, command, service)
-            self.assertEqual(len(answers), 1)
-            self.assertIn("Ссылка устарела", answers[0])
-
-        asyncio.run(check())
-
-    def test_private_start_stale_task_id(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            task_id = service.register_pm_task(
-                "https://www.tiktok.com/@u/video/123", 42
-            )
-            service.claim_pm_url(task_id, 42)  # already claimed
-            answers = []
-
-            async def answer(text):
-                answers.append(text)
-
-            message = SimpleNamespace(
-                chat=SimpleNamespace(id=7, type="private"),
-                from_user=SimpleNamespace(id=42),
-                bot=SimpleNamespace(me=AsyncMock()),
-                answer=answer,
-            )
-            command = SimpleNamespace(args=task_id)
-            await handlers.private_start(message, command, service)
-            self.assertEqual(len(answers), 0)  # duplicate /start is ignored
-            message.bot.me.assert_not_called()
-
-        asyncio.run(check())
-
-    def test_private_start_unknown_task_id(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            answers = []
-
-            async def answer(text):
-                answers.append(text)
-
-            message = SimpleNamespace(
-                chat=SimpleNamespace(id=7, type="private"),
-                from_user=SimpleNamespace(id=42),
-                bot=SimpleNamespace(me=AsyncMock()),
-                answer=answer,
-            )
-            command = SimpleNamespace(args="missing-token")
-            await handlers.private_start(message, command, service)
-            self.assertEqual(len(answers), 1)
-            self.assertIn("Ссылка устарела", answers[0])
-
-        asyncio.run(check())
-
     def test_private_start_help(self):
         async def check():
             service = video_service.VideoService(
@@ -180,9 +100,10 @@ class MainTests(unittest.TestCase):
                 bot=SimpleNamespace(
                     me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
                 ),
+                text="/start",
                 answer=answer,
             )
-            await handlers.private_start(message, SimpleNamespace(args=""), service)
+            await handlers.private_start(message, service)
             self.assertEqual(len(answers), 1)
             self.assertIn("Отправьте ссылку", answers[0])
             self.assertIn("@my_bot", answers[0])
@@ -213,10 +134,10 @@ class MainTests(unittest.TestCase):
             message = SimpleNamespace(
                 chat=SimpleNamespace(id=7, type="private"),
                 from_user=SimpleNamespace(id=42),
+                text="/start https://www.tiktok.com/@u/video/123",
                 answer=answer,
             )
-            command = SimpleNamespace(args="https://www.tiktok.com/@u/video/123")
-            await handlers.private_start(message, command, service)
+            await handlers.private_start(message, service)
             service.result_for.assert_called_once_with(
                 "https://www.tiktok.com/@u/video/123"
             )
@@ -302,6 +223,225 @@ class MainTests(unittest.TestCase):
             self.assertEqual(len(answers), 1)
             self.assertIn("много запросов", answers[0])
             service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_answers_placeholder_then_video(self):
+        async def check():
+            answered = []
+            edited = []
+
+            async def answer_guest_query(guest_query_id, result):
+                answered.append((guest_query_id, result))
+                return SimpleNamespace(inline_message_id="im1")
+
+            async def edit_message_media(**kwargs):
+                edited.append(kwargs)
+
+            bot = SimpleNamespace(
+                answer_guest_query=answer_guest_query,
+                edit_message_media=edit_message_media,
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock(return_value=None)
+            service.result_for = AsyncMock(
+                return_value=("tiktok:123", {"file_id": "abc"})
+            )
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            await handlers.guest_message(message, service)
+            await asyncio.sleep(0.01)
+            self.assertEqual(answered[0][0], "q1")
+            self.assertEqual(
+                answered[0][1].input_message_content.message_text, "⏳ Загрузка..."
+            )
+            self.assertEqual(edited[0]["media"].media, "abc")
+            self.assertEqual(edited[0]["inline_message_id"], "im1")
+            service.result_for.assert_called_once_with("https://vm.tiktok.com/abc/")
+
+        asyncio.run(check())
+
+    def test_guest_message_cache_hit_answers_video(self):
+        async def check():
+            answered = []
+            bot = SimpleNamespace(
+                answer_guest_query=AsyncMock(
+                    side_effect=lambda query_id, result: (
+                        answered.append((query_id, result))
+                        or SimpleNamespace(inline_message_id="im1")
+                    )
+                ),
+                edit_message_media=AsyncMock(),
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock(
+                return_value=(
+                    "tiktok:123",
+                    {"file_id": "abc", "title": "t", "description": "d"},
+                )
+            )
+            service.result_for = AsyncMock()
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            await handlers.guest_message(message, service)
+            self.assertEqual(answered[0][1].video_file_id, "abc")
+            service.result_for.assert_not_called()
+            bot.edit_message_media.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_without_url_answers_hint(self):
+        async def check():
+            answered = []
+
+            async def answer_guest_query(guest_query_id, result):
+                answered.append((guest_query_id, result))
+                return SimpleNamespace(inline_message_id="im1")
+
+            service = video_service.VideoService(
+                SimpleNamespace(answer_guest_query=answer_guest_query),
+                object(),
+                config.ServiceConfig(None, 0),
+            )
+            service.cached_video = AsyncMock()
+            service.result_for = AsyncMock()
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                bot=SimpleNamespace(
+                    me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
+                ),
+                text="@my_bot привет",
+            )
+            await handlers.guest_message(message, service)
+            self.assertIn("@my_bot", answered[0][1].input_message_content.message_text)
+            service.cached_video.assert_not_called()
+            service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_rate_limited(self):
+        async def check():
+            bot = SimpleNamespace(
+                answer_guest_query=AsyncMock(), edit_message_media=AsyncMock()
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.allow_user = AsyncMock(return_value=False)
+            service.cached_video = AsyncMock()
+            service.result_for = AsyncMock()
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            await handlers.guest_message(message, service)
+            bot.answer_guest_query.assert_not_called()
+            service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_reports_result_failure(self):
+        async def check():
+            edited = []
+
+            async def edit_message_text(**kwargs):
+                edited.append(kwargs)
+
+            bot = SimpleNamespace(
+                answer_guest_query=AsyncMock(
+                    return_value=SimpleNamespace(inline_message_id="im1")
+                ),
+                edit_message_media=AsyncMock(),
+                edit_message_text=edit_message_text,
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock(return_value=None)
+            service.result_for = AsyncMock(side_effect=RuntimeError("boom"))
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            await handlers.guest_message(message, service)
+            await asyncio.sleep(0.01)
+            self.assertEqual(
+                edited[0]["text"], "❌ Не удалось обработать видео. Попробуйте ещё раз."
+            )
+            self.assertEqual(edited[0]["inline_message_id"], "im1")
+            bot.edit_message_media.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_answer_error_is_logged(self):
+        async def check():
+            async def answer_guest_query(guest_query_id, result):
+                raise RuntimeError("telegram down")
+
+            service = video_service.VideoService(
+                SimpleNamespace(answer_guest_query=answer_guest_query),
+                object(),
+                config.ServiceConfig(None, 0),
+            )
+            service.cached_video = AsyncMock(return_value=None)
+            service.result_for = AsyncMock()
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            with self.assertLogs("ttblow", level="ERROR"):
+                await handlers.guest_message(message, service)  # must not raise
+            service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_edit_failure_is_logged(self):
+        async def check():
+            async def fail(**kwargs):
+                raise RuntimeError("no")
+
+            bot = SimpleNamespace(
+                answer_guest_query=AsyncMock(
+                    return_value=SimpleNamespace(inline_message_id="im1")
+                ),
+                edit_message_media=fail,
+                edit_message_text=fail,
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock(return_value=None)
+            service.result_for = AsyncMock(
+                return_value=("tiktok:123", {"file_id": "abc"})
+            )
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                text="@my_bot https://vm.tiktok.com/abc/",
+            )
+            await handlers.guest_message(message, service)
+            await asyncio.sleep(0.01)  # must not raise
 
         asyncio.run(check())
 
@@ -793,17 +933,6 @@ class MainTests(unittest.TestCase):
             download_file.assert_any_call("https://a/1.jpg", None, directory / "1.jpg")
             download_file.assert_any_call("https://b/2.jpg", None, directory / "2.jpg")
 
-    def test_register_pm_task_collision(self):
-        service = video_service.VideoService(
-            object(), object(), config.ServiceConfig(None, 0)
-        )
-        service.pm_urls["dup"] = (1, "https://www.tiktok.com/@u/video/0")
-        with mock.patch.object(
-            video_service.secrets, "token_urlsafe", side_effect=["dup", "unique"]
-        ):
-            task_id = service.register_pm_task("https://www.tiktok.com/@u/video/123", 1)
-        self.assertEqual(task_id, "unique")
-
     def test_tiktok_aweme_data(self):
         stub_extractor = SimpleNamespace(
             _extract_web_data_and_status=lambda url, vid: ({"id": vid}, 0)
@@ -1229,188 +1358,10 @@ class MainTests(unittest.TestCase):
 
         asyncio.run(check())
 
-    def test_report_background_failure(self):
-        async def check():
-            cancelled = asyncio.create_task(asyncio.sleep(5))
-            cancelled.cancel()
-            await asyncio.sleep(0)  # deliver the cancellation
-            handlers.report_background_failure(cancelled)
-
-            async def boom():
-                raise RuntimeError("x")
-
-            with self.assertLogs("ttblow", level="ERROR") as captured:
-                task = asyncio.create_task(boom())
-                await asyncio.sleep(0)
-                handlers.report_background_failure(task)
-            self.assertIn("Timed-out video job failed", captured.output[0])
-
-        asyncio.run(check())
-
-    def test_inline_query_empty_text(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            calls = []
-
-            async def answer(results, **kwargs):
-                calls.append((results, kwargs))
-
-            query = SimpleNamespace(
-                query="", id="q1", from_user=SimpleNamespace(id=7), answer=answer
-            )
-            await handlers.inline_query(query, service)
-            self.assertEqual(calls[0][0], [])
-            self.assertIsNone(calls[0][1]["switch_pm_parameter"])
-
-        asyncio.run(check())
-
-    def test_inline_query_rate_limited(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            service.allow_user = AsyncMock(return_value=False)
-            calls = []
-
-            async def answer(results, **kwargs):
-                calls.append((results, kwargs))
-
-            query = SimpleNamespace(
-                query="https://www.tiktok.com/@u/video/1",
-                id="q1",
-                from_user=SimpleNamespace(id=7),
-                answer=answer,
-            )
-            await handlers.inline_query(query, service)
-            self.assertEqual(calls[0][0], [])
-
-        asyncio.run(check())
-
-    def test_inline_query_success(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            record = {"file_id": "abc", "title": "t", "description": "d"}
-            service.result_for = AsyncMock(return_value=("tiktok:123", record))
-            calls = []
-
-            async def answer(results, **kwargs):
-                calls.append((results, kwargs))
-
-            query = SimpleNamespace(
-                query="https://www.tiktok.com/@u/video/123",
-                id="q1",
-                from_user=SimpleNamespace(id=7),
-                answer=answer,
-            )
-            await handlers.inline_query(query, service)
-            self.assertEqual(len(calls[0][0]), 1)
-            self.assertEqual(calls[0][0][0].video_file_id, "abc")
-
-        asyncio.run(check())
-
-    def test_inline_query_timeout_moves_to_pm(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            release = asyncio.Event()
-
-            async def hang(url):
-                await release.wait()
-                return "tiktok:123", {}
-
-            service.result_for = hang
-            service.inline_timeout = 0.05
-            calls = []
-
-            async def answer(results, **kwargs):
-                calls.append((results, kwargs))
-
-            query = SimpleNamespace(
-                query="https://www.tiktok.com/@u/video/123",
-                id="q1",
-                from_user=SimpleNamespace(id=7),
-                answer=answer,
-            )
-            await handlers.inline_query(query, service)
-            self.assertEqual(calls[0][0], [])
-            self.assertIsNotNone(calls[0][1]["switch_pm_parameter"])
-            release.set()
-            await asyncio.sleep(0.01)
-
-        asyncio.run(check())
-
-    def test_inline_query_answer_error_is_logged(self):
-        async def check():
-            service = video_service.VideoService(
-                object(), object(), config.ServiceConfig(None, 0)
-            )
-            service.result_for = AsyncMock(
-                return_value=("tiktok:123", {"file_id": "abc"})
-            )
-
-            async def answer(**kwargs):
-                raise RuntimeError("telegram down")
-
-            query = SimpleNamespace(
-                query="https://www.tiktok.com/@u/video/123",
-                id="q1",
-                from_user=SimpleNamespace(id=7),
-                answer=answer,
-            )
-            await handlers.inline_query(query, service)  # must not raise
-
-        asyncio.run(check())
-
-    def test_private_start_success(self):
-        async def check():
-            edited = []
-
-            async def edit_message_media(**kwargs):
-                edited.append(kwargs)
-
-            bot = SimpleNamespace(edit_message_media=edit_message_media)
-            service = video_service.VideoService(
-                bot, object(), config.ServiceConfig(None, 0)
-            )
-            task_id = service.register_pm_task(
-                "https://www.tiktok.com/@u/video/123", 42
-            )
-            service.result_for = AsyncMock(
-                return_value=("tiktok:123", {"file_id": "abc"})
-            )
-            placeholders = []
-
-            async def answer(text):
-                placeholder = SimpleNamespace(
-                    message_id=1, edit_text=AsyncMock(), delete=AsyncMock()
-                )
-                placeholders.append(placeholder)
-                return placeholder
-
-            message = SimpleNamespace(
-                chat=SimpleNamespace(id=7, type="private"),
-                from_user=SimpleNamespace(id=42),
-                answer=answer,
-            )
-            command = SimpleNamespace(args=task_id)
-            await handlers.private_start(message, command, service)
-            self.assertEqual(len(edited), 1)
-            self.assertEqual(edited[0]["media"].media, "abc")
-
-        asyncio.run(check())
-
     def test_private_start_reports_result_failure(self):
         async def check():
             service = video_service.VideoService(
                 object(), object(), config.ServiceConfig(None, 0)
-            )
-            task_id = service.register_pm_task(
-                "https://www.tiktok.com/@u/video/123", 42
             )
             service.result_for = AsyncMock(side_effect=RuntimeError("boom"))
             placeholders = []
@@ -1425,10 +1376,10 @@ class MainTests(unittest.TestCase):
             message = SimpleNamespace(
                 chat=SimpleNamespace(id=7, type="private"),
                 from_user=SimpleNamespace(id=42),
+                text="/start https://www.tiktok.com/@u/video/123",
                 answer=answer,
             )
-            command = SimpleNamespace(args=task_id)
-            await handlers.private_start(message, command, service)
+            await handlers.private_start(message, service)
             placeholders[0].edit_text.assert_called_once_with(
                 "❌ Не удалось обработать видео. Попробуйте ещё раз."
             )
@@ -1446,9 +1397,6 @@ class MainTests(unittest.TestCase):
             service = video_service.VideoService(
                 bot, object(), config.ServiceConfig(None, 0)
             )
-            task_id = service.register_pm_task(
-                "https://www.tiktok.com/@u/video/123", 42
-            )
             service.result_for = AsyncMock(
                 return_value=("tiktok:123", {"file_id": "abc"})
             )
@@ -1464,10 +1412,10 @@ class MainTests(unittest.TestCase):
             message = SimpleNamespace(
                 chat=SimpleNamespace(id=7, type="private"),
                 from_user=SimpleNamespace(id=42),
+                text="/start https://www.tiktok.com/@u/video/123",
                 answer=answer,
             )
-            command = SimpleNamespace(args=task_id)
-            await handlers.private_start(message, command, service)
+            await handlers.private_start(message, service)
             bot.send_video.assert_called_once()
             placeholders[0].delete.assert_called_once()
 
@@ -1573,10 +1521,10 @@ class MainTests(unittest.TestCase):
             message = SimpleNamespace(
                 chat=SimpleNamespace(type="group"),
                 from_user=SimpleNamespace(id=42),
+                text="/start anything",
                 answer=answer,
             )
-            command = SimpleNamespace(args="anything")
-            await handlers.private_start(message, command, service)
+            await handlers.private_start(message, service)
             self.assertEqual(calls, [])
 
         asyncio.run(check())

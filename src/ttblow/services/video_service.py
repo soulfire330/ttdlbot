@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import logging
-import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -47,17 +46,7 @@ class VideoService:
         self.bot = bot
         self.cache = cache
         self.config = config
-        self.inline_timeout = min(int(setting("INLINE_TIMEOUT", "9")), 9)
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
-        self.pm_urls = TTLCache(
-            maxsize=int(setting("PM_TASK_MAXSIZE", "10000")),
-            ttl=int(setting("PM_TASK_TTL", str(24 * 60 * 60))),
-        )
-        # Telegram clients sometimes send /start twice on switch_pm tap
-        self.claimed = TTLCache(
-            maxsize=int(setting("PM_TASK_MAXSIZE", "10000")),
-            ttl=300,
-        )
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight: dict[str, asyncio.Task] = {}
         self.rate_limit = TTLCache(
@@ -75,23 +64,18 @@ class VideoService:
             self.rate_limit[user_id] = count + 1
             return True
 
-    def register_pm_task(self, url: str, user_id: int) -> str:
-        task_id = secrets.token_urlsafe(24)
-        while task_id in self.pm_urls:
-            task_id = secrets.token_urlsafe(24)
-        self.pm_urls[task_id] = (user_id, url)
-        return task_id
-
-    def claim_pm_url(self, task_id: str, user_id: int) -> str | None:
-        task = self.pm_urls.get(task_id)
-        if not task or task[0] != user_id:
+    async def cached_video(self, url: str) -> tuple[str, dict[str, Any]] | None:
+        """Быстрый путь: отдаём запись из кэша, не запуская yt-dlp."""
+        alias = f"alias:{normalized_url(url)}"
+        key = await self.cache.get(alias)
+        if not key:
             return None
-        self.pm_urls.pop(task_id, None)
-        self.claimed[task_id] = user_id
-        return task[1]
-
-    def was_claimed(self, task_id: str, user_id: int) -> bool:
-        return self.claimed.get(task_id) == user_id
+        record = await self._cached_record(key)
+        if record is None:
+            await self.cache.delete(alias)
+            return None
+        logger.info("Cache hit for %s media %s", source_name(url), key)
+        return key, record
 
     async def result_for(self, url: str) -> tuple[str, dict[str, Any]]:
         request_key = normalized_url(url)
@@ -125,14 +109,9 @@ class VideoService:
     async def _resolve(self, url: str) -> tuple[str, dict[str, Any]]:
         async with self.jobs:
             job_start = time.perf_counter()
-            alias = f"alias:{normalized_url(url)}"
-            key = await self.cache.get(alias)
-            if key:
-                record = await self._cached_record(key)
-                if record is not None:
-                    logger.info("Cache hit for %s media %s", source_name(url), key)
-                    return key, record
-                await self.cache.delete(alias)
+            cached = await self.cached_video(url)
+            if cached is not None:
+                return cached
 
             stage_start = time.perf_counter()
             metadata = await asyncio.to_thread(extract_metadata, url, self.config.proxy)
@@ -144,7 +123,7 @@ class VideoService:
             )
             record = await self._cached_record(key)
             if record is not None:
-                await self.cache.set(alias, key)
+                await self.cache.set(f"alias:{normalized_url(url)}", key)
                 logger.info("Cache hit for %s media %s", source_name(url), key)
                 return key, record
 

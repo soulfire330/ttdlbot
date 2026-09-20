@@ -25,6 +25,15 @@ def media_url(text: str) -> str | None:
     return None
 
 
+def first_media_url(text: str) -> str | None:
+    """Первая медиа-ссылка в тексте: в guest-режиме перед ней стоит упоминание бота."""
+    for token in text.split():
+        url = media_url(token)
+        if url:
+            return url
+    return None
+
+
 def source_name(url: str) -> str:
     host = (urlparse(url).hostname or "").lower()
     return "tiktok" if is_tiktok_host(host) else "instagram"

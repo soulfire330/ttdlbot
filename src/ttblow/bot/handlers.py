@@ -1,4 +1,4 @@
-"""Бот-интерфейс: inline-запросы и команда /start."""
+"""Бот-интерфейс: guest-запросы, личка и админ-команды."""
 
 import asyncio
 import logging
@@ -6,21 +6,28 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    InlineQuery,
+    InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
+    InlineQueryResultUnion,
     InputMediaVideo,
+    InputTextMessageContent,
     Message,
 )
 
 from ttblow.config import DEFAULT_COOKIES_FILE, setting
 from ttblow.services.video_service import VideoService
-from ttblow.utils.urls import media_url
+from ttblow.utils.urls import first_media_url
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+background_tasks: set[asyncio.Task] = set()
+
+LOADING_TEXT = "⏳ Загрузка..."
+FAILURE_TEXT = "❌ Не удалось обработать видео. Попробуйте ещё раз."
 
 
 def cached_result(key: str, record: dict[str, Any]) -> InlineQueryResultCachedVideo:
@@ -35,62 +42,98 @@ def cached_result(key: str, record: dict[str, Any]) -> InlineQueryResultCachedVi
     )
 
 
-def report_background_failure(task: asyncio.Task) -> None:
-    if task.cancelled():
-        return
-    error = task.exception()
-    if error:
-        logger.error("Timed-out video job failed: %s", error)
+def text_result(result_id: str, title: str, text: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id=result_id,
+        title=title,
+        input_message_content=InputTextMessageContent(message_text=text),
+    )
 
 
-@router.inline_query()
-async def inline_query(query: InlineQuery, service: VideoService) -> None:
-    text = query.query or ""
-    logger.info("Inline query %s received (%d chars)", query.id, len(text))
-    url = media_url(text)
-    switch_pm_text = None
-    switch_pm_parameter = None
-    if not url:
-        results = []
-    elif not await service.allow_user(query.from_user.id):
-        logger.warning("Rate limit exceeded for user %s", query.from_user.id)
-        results = []
-    else:
-        task = asyncio.create_task(service.result_for(url))
-        try:
-            key, record = await asyncio.wait_for(
-                asyncio.shield(task),
-                timeout=service.inline_timeout,
-            )
-            results = [cached_result(key, record)]
-        except TimeoutError:
-            task.add_done_callback(report_background_failure)
-            switch_pm_text = "⏳ Видео долго обрабатывается. Отправить в ЛС."
-            switch_pm_parameter = service.register_pm_task(url, query.from_user.id)
-            logger.warning(
-                "Inline query %s timed out after %ss; task %s moved to PM",
-                query.id,
-                service.inline_timeout,
-                switch_pm_parameter,
-            )
-            results = []
-        except Exception as error:
-            logger.error("Failed to prepare inline query %s: %s", query.id, error)
-            results = []
+async def hint_text(message: Message) -> str:
+    me = await message.bot.me()
+    return f"Пришлите ссылку на TikTok или Instagram Reels: @{me.username} <ссылка>"
 
+
+async def answer_guest(
+    service: VideoService, query_id: str, result: InlineQueryResultUnion
+) -> str | None:
     try:
-        await query.answer(
-            results,
-            cache_time=0,
-            is_personal=True,
-            switch_pm_text=switch_pm_text,
-            switch_pm_parameter=switch_pm_parameter,
-        )
-        logger.info(
-            "Answered inline query %s with %d result(s)", query.id, len(results)
+        sent = await service.bot.answer_guest_query(query_id, result)
+    except Exception as error:
+        logger.error("Failed to answer guest query %s: %s", query_id, error)
+        return None
+    logger.info(
+        "Answered guest query %s with message %s", query_id, sent.inline_message_id
+    )
+    return sent.inline_message_id
+
+
+async def edit_guest_text(
+    service: VideoService, inline_message_id: str, text: str
+) -> None:
+    try:
+        await service.bot.edit_message_text(
+            text=text, inline_message_id=inline_message_id
         )
     except Exception as error:
-        logger.error("Failed to answer inline query %s: %s", query.id, error)
+        logger.error("Failed to edit guest message %s: %s", inline_message_id, error)
+
+
+async def edit_guest_when_ready(
+    service: VideoService, inline_message_id: str, url: str
+) -> None:
+    """Джоба качается в фоне: подменяем плейсхолдер видео или текстом ошибки."""
+    try:
+        _, record = await service.result_for(url)
+    except Exception as error:
+        logger.error("Failed to process guest video %s: %s", url, error)
+        await edit_guest_text(service, inline_message_id, FAILURE_TEXT)
+        return
+    try:
+        await service.bot.edit_message_media(
+            media=InputMediaVideo(media=record["file_id"]),
+            inline_message_id=inline_message_id,
+        )
+    except Exception as error:
+        logger.error("Failed to edit guest message %s: %s", inline_message_id, error)
+        await edit_guest_text(service, inline_message_id, FAILURE_TEXT)
+        return
+    logger.info("Sent %s as guest message %s", url, inline_message_id)
+
+
+@router.guest_message()
+async def guest_message(message: Message, service: VideoService) -> None:
+    query_id = message.guest_query_id
+    if not query_id:
+        return
+    logger.info("Guest query %s from user %s", query_id, message.from_user.id)
+    if not await service.allow_user(message.from_user.id):
+        logger.warning("Rate limit exceeded for user %s", message.from_user.id)
+        return
+
+    url = first_media_url(message.text or "")
+    if url is None:
+        await answer_guest(
+            service,
+            query_id,
+            text_result("hint", "Подсказка", await hint_text(message)),
+        )
+        return
+
+    cached = await service.cached_video(url)
+    if cached is not None:
+        await answer_guest(service, query_id, cached_result(*cached))
+        return
+
+    inline_message_id = await answer_guest(
+        service, query_id, text_result("loading", "Загрузка", LOADING_TEXT)
+    )
+    if inline_message_id is None:
+        return
+    task = asyncio.create_task(edit_guest_when_ready(service, inline_message_id, url))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
 
 
 def _is_admin(message: Message, service: VideoService) -> bool:
@@ -137,56 +180,40 @@ async def admin_cookie_upload(message: Message, service: VideoService) -> None:
 
 
 @router.message(CommandStart())
-async def private_start(
-    message: Message, command: CommandObject, service: VideoService
-) -> None:
+async def private_start(message: Message, service: VideoService) -> None:
     if message.chat.type != "private":
         return
-    args = command.args or ""
-    if not args:
-        me = await message.bot.me()
-        await message.answer(
-            "Привет! Отправьте ссылку на TikTok или Instagram Reels — скачаю видео.\n\n"
-            f"В любом чате можно через инлайн: @{me.username} <ссылка>"
-        )
+    url = first_media_url(message.text or "")
+    if url:
+        await _process_private(message, service, url)
         return
-    url = media_url(args)
-    if url is None:
-        url = service.claim_pm_url(args, message.from_user.id)
-    if not url:
-        if not service.was_claimed(args, message.from_user.id):
-            await message.answer(
-                "Ссылка устарела или уже обрабатывается. "
-                "Отправьте её через инлайн ещё раз."
-            )
-        return
-    await _process_private(message, service, url, args or url)
+    me = await message.bot.me()
+    await message.answer(
+        "Привет! Отправьте ссылку на TikTok или Instagram Reels — скачаю видео.\n\n"
+        f"В любом чате упомяните меня: @{me.username} <ссылка>"
+    )
 
 
 @router.message()
 async def private_link(message: Message, service: VideoService) -> None:
     if message.chat.type != "private" or not message.text:
         return
-    url = media_url(message.text)
+    url = first_media_url(message.text)
     if not url:
         return
     if not await service.allow_user(message.from_user.id):
         await message.answer("⏳ Слишком много запросов. Подождите немного.")
         return
-    await _process_private(message, service, url, url)
+    await _process_private(message, service, url)
 
 
-async def _process_private(
-    message: Message, service: VideoService, url: str, label: str
-) -> None:
-    placeholder = await message.answer("⏳ Загрузка...")
+async def _process_private(message: Message, service: VideoService, url: str) -> None:
+    placeholder = await message.answer(LOADING_TEXT)
     try:
         _, record = await service.result_for(url)
     except Exception as error:
-        logger.error("Failed to process private video %s: %s", label, error)
-        await placeholder.edit_text(
-            "❌ Не удалось обработать видео. Попробуйте ещё раз."
-        )
+        logger.error("Failed to process private video %s: %s", url, error)
+        await placeholder.edit_text(FAILURE_TEXT)
         return
     try:
         await service.bot.edit_message_media(
@@ -195,10 +222,10 @@ async def _process_private(
             media=InputMediaVideo(media=record["file_id"]),
         )
     except Exception as error:
-        logger.error("Failed to edit placeholder %s: %s", label, error)
+        logger.error("Failed to edit placeholder %s: %s", url, error)
         await service.bot.send_video(
             chat_id=message.chat.id,
             video=record["file_id"],
         )
         await placeholder.delete()
-    logger.info("Sent %s to private chat %s", label, message.chat.id)
+    logger.info("Sent %s to private chat %s", url, message.chat.id)
