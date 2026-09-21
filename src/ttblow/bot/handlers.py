@@ -174,8 +174,8 @@ def emoji_pool() -> list[str]:
 
 
 def emoji_code() -> list[str]:
-    """Пять уникальных эмодзи: первый идёт в заголовок, все — на скрытую ссылку."""
-    return random.sample(emoji_pool(), 5)
+    """Три одинаковых эмодзи: первый идёт в заголовок, все — на скрытую ссылку."""
+    return [random.choice(emoji_pool())] * 3
 
 
 @router.inline_query()

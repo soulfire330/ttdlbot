@@ -296,8 +296,8 @@ class MainTests(unittest.TestCase):
                     handlers.emoji_pool(), ["🦊", "🐼", "🌵", "🦉", "🍄"]
                 )
                 code = handlers.emoji_code()
-                self.assertEqual(len(code), 5)
-                self.assertEqual(len(set(code)), 5)
+                self.assertEqual(len(code), 3)
+                self.assertEqual(len(set(code)), 1)
                 self.assertTrue(set(code) <= set(handlers.emoji_pool()))
             path.write_text("🦊\n🐼\n", encoding="utf-8")
             with mock.patch.object(handlers, "EMOJI_FILE", path):
@@ -319,7 +319,7 @@ class MainTests(unittest.TestCase):
                 answer=answer,
             )
             with mock.patch.object(
-                handlers, "emoji_code", return_value=["🦊", "🐼", "🌵", "🦉", "🍄"]
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
             ):
                 await handlers.inline_link(query)
             results, kwargs = answered[0]
@@ -327,7 +327,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(results[0].title, "🦊 Скачать видео")
             self.assertEqual(
                 content.message_text,
-                '@my_bot <a href="https://www.tiktok.com/@u/video/123">🦊🐼🌵🦉🍄</a>',
+                '@my_bot <a href="https://www.tiktok.com/@u/video/123">🦊🦊🦊</a>',
             )
             self.assertEqual(content.parse_mode, "HTML")
             self.assertTrue(content.link_preview_options.is_disabled)
