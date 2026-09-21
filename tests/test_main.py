@@ -272,6 +272,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             await handlers.guest_message(message, service)
@@ -384,6 +385,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://www.tiktok.com/@u/photo/123",
             )
             await handlers.guest_message(message, service)
@@ -423,6 +425,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             await handlers.guest_message(message, service)
@@ -454,11 +457,37 @@ class MainTests(unittest.TestCase):
                 bot=SimpleNamespace(
                     me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
                 ),
+                reply_to_message=None,
                 text="@my_bot привет",
                 entities=[],
             )
             await handlers.guest_message(message, service)
             self.assertIn("@my_bot", answered[0][1].input_message_content.message_text)
+            service.cached_video.assert_not_called()
+            service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_guest_message_ignores_replies(self):
+        async def check():
+            bot = SimpleNamespace(
+                answer_guest_query=AsyncMock(), edit_message_media=AsyncMock()
+            )
+            service = video_service.VideoService(
+                bot, object(), config.ServiceConfig(None, 0)
+            )
+            service.cached_video = AsyncMock()
+            service.result_for = AsyncMock()
+            message = SimpleNamespace(
+                guest_query_id="q1",
+                chat=SimpleNamespace(id=7),
+                from_user=SimpleNamespace(id=42),
+                reply_to_message=SimpleNamespace(message_id=5),
+                text="@my_bot https://vm.tiktok.com/abc/",
+                entities=[],
+            )
+            await handlers.guest_message(message, service)
+            bot.answer_guest_query.assert_not_called()
             service.cached_video.assert_not_called()
             service.result_for.assert_not_called()
 
@@ -479,6 +508,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             await handlers.guest_message(message, service)
@@ -510,6 +540,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             await handlers.guest_message(message, service)
@@ -538,6 +569,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             with self.assertLogs("ttblow", level="ERROR"):
@@ -569,6 +601,7 @@ class MainTests(unittest.TestCase):
                 guest_query_id="q1",
                 chat=SimpleNamespace(id=7),
                 from_user=SimpleNamespace(id=42),
+                reply_to_message=None,
                 text="@my_bot https://vm.tiktok.com/abc/",
             )
             await handlers.guest_message(message, service)

@@ -212,6 +212,9 @@ async def guest_message(message: Message, service: VideoService) -> None:
     query_id = message.guest_query_id
     if not query_id:
         return
+    if message.reply_to_message is not None:
+        logger.info("Ignoring guest reply from user %s", message.from_user.id)
+        return
     logger.info("Guest query %s from user %s", query_id, message.from_user.id)
     if not await service.allow_user(message.from_user.id):
         logger.warning("Rate limit exceeded for user %s", message.from_user.id)
