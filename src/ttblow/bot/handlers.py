@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import random
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +51,7 @@ def photo_rich_message(record: dict[str, Any]) -> InputRichMessage:
     blocks = [InputRichBlockSlideshow(blocks=photos)]
     if record.get("audio_file_id"):
         blocks.append(
-            InputRichBlockAudio(
-                audio=InputMediaAudio(media=record["audio_file_id"])
-            )
+            InputRichBlockAudio(audio=InputMediaAudio(media=record["audio_file_id"]))
         )
     return InputRichMessage(blocks=blocks)
 
@@ -88,6 +87,40 @@ def text_result(result_id: str, title: str, text: str) -> InlineQueryResultArtic
         title=title,
         input_message_content=InputTextMessageContent(message_text=text),
     )
+
+
+def mention_result(
+    url: str, username: str, code: list[str]
+) -> InlineQueryResultArticle:
+    """Ссылка спрятана за эмодзи: упоминание запускает guest-флоу бота."""
+    return InlineQueryResultArticle(
+        id="hide-link",
+        title=f"{code[0]} Отправить сразу",
+        description="Или нажмите пробел, чтобы подождать загрузки",
+        input_message_content=InputTextMessageContent(
+            message_text=(
+                f"@{username} "
+                f'<a href="{html.escape(url, quote=True)}">{"".join(code)}</a>'
+            ),
+            parse_mode="HTML",
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        ),
+    )
+
+
+def spawn(job: Coroutine[Any, Any, Any]) -> asyncio.Task:
+    """Держим ссылку на фоновую задачу, иначе её соберёт GC."""
+    task = asyncio.create_task(job)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    task.add_done_callback(log_background_failure)
+    return task
+
+
+def log_background_failure(task: asyncio.Task) -> None:
+    """Иначе брошенное исключение фоновой задачи уйдёт в лог как «never retrieved»."""
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.warning("Background job failed: %s", error)
 
 
 def message_media_url(message: Message) -> str | None:
@@ -179,32 +212,53 @@ def emoji_code() -> list[str]:
 
 
 @router.inline_query()
-async def inline_link(query: InlineQuery) -> None:
-    """Результат прячет ссылку за эмодзи: упоминание в тексте запускает guest-флоу."""
+async def inline_link(query: InlineQuery, service: VideoService) -> None:
+    """Готовое видео отдаём результатом, иначе — моментальное «Отправить сразу»."""
     url = first_media_url(query.query or "")
     if url is None:
         await query.answer([], cache_time=0)
         return
+    prepared = await service.cached_video(url)
+    if prepared is None and await service.allow_user(query.from_user.id):
+        prepared = await start_or_wait(service, url)
     me = await query.bot.me()
-    code = emoji_code()
-    await query.answer(
-        [
-            InlineQueryResultArticle(
-                id="hide-link",
-                title=f"{code[0]} Скачать видео",
-                description=url,
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        f"@{me.username} "
-                        f'<a href="{html.escape(url, quote=True)}">{"".join(code)}</a>'
-                    ),
-                    parse_mode="HTML",
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                ),
-            )
-        ],
-        cache_time=0,
-    )
+    if prepared is not None:
+        results: list[InlineQueryResultUnion] = [cached_result(*prepared)]
+    else:
+        results = [mention_result(url, me.username, emoji_code())]
+    await answer_query(query, results)
+
+
+async def start_or_wait(
+    service: VideoService, url: str
+) -> tuple[str, dict[str, Any]] | None:
+    """Холодный URL греем в фоне, а уже начатую загрузку ждём: за ней и вернулись."""
+    waiting = service.is_running(url)
+    task = spawn(service.result_for(url))
+    if not waiting:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), service.inline_wait)
+    except TimeoutError:
+        logger.info(
+            "Inline query waits for %s for %ss in background",
+            url,
+            service.inline_wait,
+        )
+        return None
+    except Exception as error:
+        logger.warning("Prefetch failed for %s: %s", url, error)
+        return None
+
+
+async def answer_query(
+    query: InlineQuery, results: list[InlineQueryResultUnion]
+) -> None:
+    """Клиент мог бросить инлайн-запрос, пока мы ждали скачивание."""
+    try:
+        await query.answer(results, cache_time=0)
+    except Exception as error:
+        logger.error("Failed to answer inline query %s: %s", query.id, error)
 
 
 @router.guest_message()
@@ -239,9 +293,7 @@ async def guest_message(message: Message, service: VideoService) -> None:
     )
     if inline_message_id is None:
         return
-    task = asyncio.create_task(edit_guest_when_ready(service, inline_message_id, url))
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
+    spawn(edit_guest_when_ready(service, inline_message_id, url))
 
 
 def _is_admin(message: Message, service: VideoService) -> bool:

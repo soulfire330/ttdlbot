@@ -33,6 +33,37 @@ def env(name, value):
             os.environ[name] = old_value
 
 
+def fake_service() -> video_service.VideoService:
+    """VideoService с заглушками: кэш пуст, лимитов нет, пайплайн не запускается."""
+    service = video_service.VideoService(
+        object(), object(), config.ServiceConfig(None, 0)
+    )
+    service.cached_video = AsyncMock(return_value=None)
+    service.allow_user = AsyncMock(return_value=True)
+    service.result_for = AsyncMock(
+        return_value=(
+            "tiktok:123",
+            {"file_id": "abc", "title": "t", "description": "d"},
+        )
+    )
+    service.inline_wait = 0
+    service.is_running = mock.Mock(return_value=False)
+    return service
+
+
+def inline_query(query: str, answer, user_id: int = 42) -> SimpleNamespace:
+    """Заглушка InlineQuery: обработчику нужны id, query, from_user, bot.me() и answer."""
+    return SimpleNamespace(
+        id="iq1",
+        query=query,
+        from_user=SimpleNamespace(id=user_id),
+        bot=SimpleNamespace(
+            me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
+        ),
+        answer=answer,
+    )
+
+
 class MainTests(unittest.TestCase):
     def test_media_urls(self):
         self.assertTrue(urls.media_url("https://vm.tiktok.com/abc/"))
@@ -292,9 +323,7 @@ class MainTests(unittest.TestCase):
             path = Path(directory) / "emojis.txt"
             path.write_text("🦊\n\n🐼 \n🌵\n🦉\n🍄\n", encoding="utf-8")
             with mock.patch.object(handlers, "EMOJI_FILE", path):
-                self.assertEqual(
-                    handlers.emoji_pool(), ["🦊", "🐼", "🌵", "🦉", "🍄"]
-                )
+                self.assertEqual(handlers.emoji_pool(), ["🦊", "🐼", "🌵", "🦉", "🍄"])
                 code = handlers.emoji_code()
                 self.assertEqual(len(code), 3)
                 self.assertEqual(len(set(code)), 1)
@@ -304,27 +333,39 @@ class MainTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     handlers.emoji_pool()
 
-    def test_inline_link_hides_url_behind_mention(self):
+    def test_inline_link_answers_mention_at_once_and_prefetches(self):
         async def check():
             answered = []
+            downloaded = []
 
             async def answer(results, **kwargs):
                 answered.append((results, kwargs))
 
-            query = SimpleNamespace(
-                query="https://www.tiktok.com/@u/video/123",
-                bot=SimpleNamespace(
-                    me=AsyncMock(return_value=SimpleNamespace(username="my_bot"))
-                ),
-                answer=answer,
-            )
+            async def slow_download(url):
+                await asyncio.sleep(0.05)
+                downloaded.append(url)
+                return "tiktok:123", {"file_id": "abc"}
+
+            service = fake_service()
+            service.inline_wait = 5
+            service.result_for = AsyncMock(side_effect=slow_download)
             with mock.patch.object(
                 handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
             ):
-                await handlers.inline_link(query)
+                await handlers.inline_link(
+                    inline_query("https://www.tiktok.com/@u/video/123", answer),
+                    service,
+                )
+            await asyncio.sleep(0.1)
             results, kwargs = answered[0]
+            self.assertEqual(downloaded, ["https://www.tiktok.com/@u/video/123"])
+            self.assertEqual(len(results), 1)
             content = results[0].input_message_content
-            self.assertEqual(results[0].title, "🦊 Скачать видео")
+            self.assertEqual(results[0].title, "🦊 Отправить сразу")
+            self.assertEqual(
+                results[0].description,
+                "Или нажмите пробел, чтобы подождать загрузки",
+            )
             self.assertEqual(
                 content.message_text,
                 '@my_bot <a href="https://www.tiktok.com/@u/video/123">🦊🦊🦊</a>',
@@ -332,6 +373,190 @@ class MainTests(unittest.TestCase):
             self.assertEqual(content.parse_mode, "HTML")
             self.assertTrue(content.link_preview_options.is_disabled)
             self.assertEqual(kwargs["cache_time"], 0)
+            service.result_for.assert_awaited_once_with(
+                "https://www.tiktok.com/@u/video/123"
+            )
+
+        asyncio.run(check())
+
+    def test_inline_link_waits_for_download_and_answers_video(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            service = fake_service()
+            service.inline_wait = 5
+            service.is_running = mock.Mock(return_value=True)
+            with mock.patch.object(handlers, "emoji_code") as emoji_code:
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            results = answered[0]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].video_file_id, "abc")
+            service.result_for.assert_awaited_once_with("https://vm.tiktok.com/abc/")
+            emoji_code.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_inline_link_falls_back_to_mention_after_timeout(self):
+        async def check():
+            answered = []
+            downloaded = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            async def slow_download(url):
+                await asyncio.sleep(0.05)
+                downloaded.append(url)
+                return "tiktok:123", {"file_id": "abc"}
+
+            service = fake_service()
+            service.inline_wait = 0.01
+            service.is_running = mock.Mock(return_value=True)
+            service.result_for = AsyncMock(side_effect=slow_download)
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
+            ):
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            self.assertEqual(answered[0][0].title, "🦊 Отправить сразу")
+            await asyncio.sleep(0.1)
+            self.assertEqual(downloaded, ["https://vm.tiktok.com/abc/"])
+
+        asyncio.run(check())
+
+    def test_inline_link_offers_cached_video_without_guest_mode(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            service = fake_service()
+            service.cached_video = AsyncMock(
+                return_value=(
+                    "tiktok:123",
+                    {
+                        "file_id": "abc",
+                        "title": "video",
+                        "description": "@user",
+                        "video_width": 720,
+                        "video_height": 1280,
+                        "video_duration": 12,
+                    },
+                )
+            )
+            with mock.patch.object(handlers, "emoji_code") as emoji_code:
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            results = answered[0]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].id, "video:tiktok:123")
+            self.assertEqual(results[0].video_file_id, "abc")
+            service.result_for.assert_not_called()
+            emoji_code.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_inline_link_offers_cached_photos_as_rich_result(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            service = fake_service()
+            service.cached_video = AsyncMock(
+                return_value=(
+                    "tiktok:123",
+                    {
+                        "type": "photo",
+                        "file_ids": ["p1", "p2"],
+                        "title": "photo",
+                        "description": "@user",
+                    },
+                )
+            )
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
+            ):
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            results = answered[0]
+            rich = results[0].input_message_content.rich_message
+            self.assertEqual(results[0].id, "photo:tiktok:123")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(
+                [block.photo.media for block in rich.blocks[0].blocks], ["p1", "p2"]
+            )
+
+        asyncio.run(check())
+
+    def test_inline_link_skips_prefetch_when_rate_limited(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            service = fake_service()
+            service.allow_user = AsyncMock(return_value=False)
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
+            ):
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            await asyncio.sleep(0.01)
+            self.assertEqual(len(answered[0]), 1)
+            service.result_for.assert_not_called()
+
+        asyncio.run(check())
+
+    def test_inline_link_keeps_mention_when_download_fails(self):
+        async def check():
+            answered = []
+
+            async def answer(results, **kwargs):
+                answered.append(results)
+
+            service = fake_service()
+            service.inline_wait = 5
+            service.is_running = mock.Mock(return_value=True)
+            service.result_for = AsyncMock(side_effect=RuntimeError("yt-dlp упал"))
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
+            ):
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
+            self.assertEqual(len(answered[0]), 1)
+            self.assertEqual(
+                answered[0][0].input_message_content.message_text,
+                '@my_bot <a href="https://vm.tiktok.com/abc/">🦊🦊🦊</a>',
+            )
+
+        asyncio.run(check())
+
+    def test_inline_link_answer_error_is_logged(self):
+        async def check():
+            async def answer(results, **kwargs):
+                raise RuntimeError("query is too old")
+
+            service = fake_service()
+            with mock.patch.object(
+                handlers, "emoji_code", return_value=["🦊", "🦊", "🦊"]
+            ):
+                await handlers.inline_link(
+                    inline_query("https://vm.tiktok.com/abc/", answer), service
+                )
 
         asyncio.run(check())
 
@@ -342,15 +567,29 @@ class MainTests(unittest.TestCase):
             async def answer(results, **kwargs):
                 answered.append(results)
 
-            query = SimpleNamespace(
-                query="привет",
-                bot=SimpleNamespace(me=AsyncMock()),
-                answer=answer,
-            )
-            await handlers.inline_link(query)
+            service = fake_service()
+            await handlers.inline_link(inline_query("привет", answer), service)
             self.assertEqual(answered, [[]])
+            service.cached_video.assert_not_called()
+            service.allow_user.assert_not_called()
 
         asyncio.run(check())
+
+    def test_inline_wait_defaults_to_client_limit(self):
+        service = video_service.VideoService(
+            object(), object(), config.ServiceConfig(None, 0)
+        )
+        self.assertEqual(service.inline_wait, 9)
+        with env("INLINE_WAIT", "20"):
+            capped = video_service.VideoService(
+                object(), object(), config.ServiceConfig(None, 0)
+            )
+            self.assertEqual(capped.inline_wait, 9)
+        with env("INLINE_WAIT", "0"):
+            disabled = video_service.VideoService(
+                object(), object(), config.ServiceConfig(None, 0)
+            )
+            self.assertEqual(disabled.inline_wait, 0)
 
     def test_guest_message_answers_placeholder_then_photos(self):
         async def check():
@@ -1456,12 +1695,8 @@ class MainTests(unittest.TestCase):
                     bot = SimpleNamespace(
                         send_photo=AsyncMock(
                             side_effect=[
-                                SimpleNamespace(
-                                    photo=[SimpleNamespace(file_id="p1")]
-                                ),
-                                SimpleNamespace(
-                                    photo=[SimpleNamespace(file_id="p2")]
-                                ),
+                                SimpleNamespace(photo=[SimpleNamespace(file_id="p1")]),
+                                SimpleNamespace(photo=[SimpleNamespace(file_id="p2")]),
                             ]
                         ),
                         send_audio=AsyncMock(

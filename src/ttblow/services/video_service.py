@@ -70,6 +70,7 @@ class VideoService:
         self.cache = cache
         self.config = config
         self.telegram_timeout = int(setting("TELEGRAM_REQUEST_TIMEOUT", "120"))
+        self.inline_wait = min(int(setting("INLINE_WAIT", "9")), 9)
         self.jobs = asyncio.Semaphore(int(setting("MAX_CONCURRENT_JOBS", "2")))
         self.inflight: dict[str, asyncio.Task] = {}
         self.rate_limit = TTLCache(
@@ -99,6 +100,10 @@ class VideoService:
             return None
         logger.info("Cache hit for %s media %s", source_name(url), key)
         return key, record
+
+    def is_running(self, url: str) -> bool:
+        """Идёт ли уже скачивание: повторный инлайн-запрос такой URL имеет смысл ждать."""
+        return normalized_url(url) in self.inflight
 
     async def result_for(self, url: str) -> tuple[str, dict[str, Any]]:
         request_key = normalized_url(url)
@@ -229,9 +234,7 @@ class VideoService:
         )
         return file_ids
 
-    async def _upload_audio(
-        self, metadata: dict[str, Any], job: Job
-    ) -> str | None:
+    async def _upload_audio(self, metadata: dict[str, Any], job: Job) -> str | None:
         source_audio = audio_url(metadata)
         if not source_audio:
             return None
