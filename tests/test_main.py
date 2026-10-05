@@ -72,6 +72,26 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(urls.media_url("https://www.instagram.com/p/ABC/"))
         self.assertIsNone(urls.media_url("https://example.com/reel/ABC/"))
 
+    def test_youtube_shorts_urls(self):
+        self.assertEqual(
+            urls.media_url("https://www.youtube.com/shorts/dQw4w9WgXcQ"),
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+        )
+        self.assertEqual(
+            urls.media_url("https://m.youtube.com/shorts/dQw4w9WgXcQ/?si=abc"),
+            "https://m.youtube.com/shorts/dQw4w9WgXcQ/?si=abc",
+        )
+        self.assertEqual(
+            urls.source_name("https://www.youtube.com/shorts/dQw4w9WgXcQ"), "youtube"
+        )
+        self.assertIsNone(urls.media_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertIsNone(urls.media_url("https://youtu.be/dQw4w9WgXcQ"))
+        self.assertIsNone(urls.media_url("https://www.youtube.com/shorts/"))
+        self.assertIsNone(urls.media_url("https://www.youtube.com/shorts/tooshort"))
+        self.assertIsNone(
+            urls.media_url("https://youtube.com.evil.com/shorts/dQw4w9WgXcQ")
+        )
+
     def test_first_media_url(self):
         self.assertEqual(
             urls.first_media_url("@my_bot https://vm.tiktok.com/abc/"),
@@ -130,6 +150,13 @@ class MainTests(unittest.TestCase):
             ),
             "instagram:123",
         )
+        self.assertEqual(
+            video_service.video_key(
+                {"id": "dQw4w9WgXcQ"},
+                "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            ),
+            "youtube:dQw4w9WgXcQ",
+        )
 
     def test_private_start_help(self):
         async def check():
@@ -156,6 +183,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(len(answers), 1)
             self.assertIn("Отправьте ссылку", answers[0])
             self.assertIn("@my_bot", answers[0])
+            self.assertIn("YouTube Shorts", answers[0])
             service.result_for.assert_not_called()
 
         asyncio.run(check())
@@ -701,7 +729,9 @@ class MainTests(unittest.TestCase):
                 entities=[],
             )
             await handlers.guest_message(message, service)
-            self.assertIn("@my_bot", answered[0][1].input_message_content.message_text)
+            hint = answered[0][1].input_message_content.message_text
+            self.assertIn("@my_bot", hint)
+            self.assertIn("YouTube Shorts", hint)
             service.cached_video.assert_not_called()
             service.result_for.assert_not_called()
 
@@ -1062,7 +1092,9 @@ class MainTests(unittest.TestCase):
 
     def test_video_record_uses_uploaded_video_dims(self):
         video = SimpleNamespace(file_id="abc", width=1080, height=1920, duration=30)
-        record = video_service.video_record({"title": "t", "uploader": "u"}, video)
+        record = video_service.video_record(
+            {"title": "t", "uploader": "u"}, video, "TikTok video"
+        )
         self.assertEqual(record["file_id"], "abc")
         self.assertEqual(record["video_width"], 1080)
         self.assertEqual(record["video_height"], 1920)
@@ -1647,6 +1679,30 @@ class MainTests(unittest.TestCase):
                 ydl.prepare_filename.return_value = str(video)
                 with self.assertRaises(ValueError):
                     media.download_video(job)
+
+    def test_download_video_youtube_joins_streams(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            video = directory / "dQw4w9WgXcQ.mp4"
+            video.write_bytes(b"x")
+            job = media.Job(
+                "https://www.youtube.com/shorts/dQw4w9WgXcQ", None, directory
+            )
+            info = {"id": "dQw4w9WgXcQ", "ext": "mp4"}
+            with mock.patch.object(media.yt_dlp, "YoutubeDL") as youtube_dl:
+                with mock.patch.object(media, "restore_audio") as restore:
+                    ydl = youtube_dl.return_value.__enter__.return_value
+                    ydl.extract_info.return_value = info
+                    ydl.prepare_filename.return_value = str(video)
+                    info_got, path = media.download_video(job)
+            options = youtube_dl.call_args.args[0]
+            self.assertEqual(
+                options["format"],
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            )
+            self.assertEqual(options["merge_output_format"], "mp4")
+            restore.assert_not_called()
+            self.assertEqual((info_got, path), (info, video))
 
     def test_resolve_video_flow(self):
         async def check():

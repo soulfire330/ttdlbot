@@ -28,6 +28,8 @@ from ttblow.utils.urls import normalized_url, source_name
 
 logger = logging.getLogger(__name__)
 
+SOURCE_TITLES = {"tiktok": "TikTok", "instagram": "Instagram", "youtube": "YouTube"}
+
 
 def video_key(info: dict[str, Any], url: str) -> str:
     key = str(info.get("id") or hashlib.sha256(url.encode()).hexdigest()[:32])
@@ -37,16 +39,16 @@ def video_key(info: dict[str, Any], url: str) -> str:
 def title_and_description(info: dict[str, Any], fallback: str) -> dict[str, str]:
     return {
         "title": (info.get("title") or fallback)[:256],
-        "description": (f"@{info['uploader']}" if info.get("uploader") else "TikTok")[
+        "description": (f"@{info['uploader']}" if info.get("uploader") else fallback)[
             :255
         ],
     }
 
 
-def video_record(info: dict[str, Any], video: Video) -> dict[str, Any]:
+def video_record(info: dict[str, Any], video: Video, fallback: str) -> dict[str, Any]:
     return {
         "file_id": video.file_id,
-        **title_and_description(info, "TikTok video"),
+        **title_and_description(info, fallback),
         "video_width": video.width,
         "video_height": video.height,
         "video_duration": video.duration,
@@ -146,7 +148,7 @@ class VideoService:
             metadata = await asyncio.to_thread(extract_metadata, url, self.config.proxy)
             key = video_key(metadata, url)
             logger.info(
-                "Prepared TikTok metadata %s in %.2fs",
+                "Prepared metadata %s in %.2fs",
                 key,
                 time.perf_counter() - stage_start,
             )
@@ -196,7 +198,7 @@ class VideoService:
                 validate_video(metadata)
                 info, path = await asyncio.to_thread(download_video, job)
                 logger.info(
-                    "Downloaded TikTok video %s in %.2fs",
+                    "Downloaded video %s in %.2fs",
                     key,
                     time.perf_counter() - stage_start,
                 )
@@ -207,7 +209,9 @@ class VideoService:
                     supports_streaming=True,
                     request_timeout=self.telegram_timeout,
                 )
-                record = video_record(info, message.video)
+                record = video_record(
+                    info, message.video, f"{SOURCE_TITLES[source_name(url)]} video"
+                )
                 logger.info(
                     "Uploaded Telegram video %s in %.2fs",
                     key,

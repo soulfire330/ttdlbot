@@ -138,7 +138,10 @@ def message_media_url(message: Message) -> str | None:
 
 async def hint_text(message: Message) -> str:
     me = await message.bot.me()
-    return f"Пришлите ссылку на TikTok или Instagram Reels: @{me.username} <ссылка>"
+    return (
+        "Пришлите ссылку на TikTok, Instagram Reels или YouTube Shorts: "
+        f"@{me.username} <ссылка>"
+    )
 
 
 async def answer_guest(
@@ -349,7 +352,8 @@ async def private_start(message: Message, service: VideoService) -> None:
         return
     me = await message.bot.me()
     await message.answer(
-        "Привет! Отправьте ссылку на TikTok или Instagram Reels — скачаю видео.\n\n"
+        "Привет! Отправьте ссылку на TikTok, Instagram Reels или YouTube Shorts"
+        " — скачаю видео.\n\n"
         f"В любом чате упомяните меня: @{me.username} <ссылка>"
     )
 

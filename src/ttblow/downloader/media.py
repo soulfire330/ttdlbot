@@ -26,6 +26,8 @@ from ttblow.utils.urls import source_name
 
 logger = logging.getLogger(__name__)
 
+YOUTUBE_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+
 
 @dataclass(frozen=True)
 class Job:
@@ -134,13 +136,18 @@ def restore_audio(video_path: Path, job: Job, info: dict[str, Any]) -> Path:
 
 
 def download_video(job: Job) -> tuple[dict[str, Any], Path]:
-    with yt_dlp.YoutubeDL(extractor_options(job.proxy, job.directory)) as ydl:
+    source = source_name(job.url)
+    options = extractor_options(job.proxy, job.directory)
+    if source == "youtube":
+        options["format"] = YOUTUBE_FORMAT
+        options["merge_output_format"] = "mp4"
+    with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(job.url, download=True)
         path = Path(ydl.prepare_filename(info))
 
     if info.get("ext") != "mp4" or not path.is_file():
         raise ValueError("yt-dlp не скачал доступный mp4")
     validate_video(info, path)
-    if source_name(job.url) == "tiktok" and not has_audio_stream(path):
+    if source == "tiktok" and not has_audio_stream(path):
         path = restore_audio(path, job, info)
     return info, path
